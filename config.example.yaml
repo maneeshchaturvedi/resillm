@@ -1,0 +1,135 @@
+# resillm - LLM Resilience Proxy Configuration
+# Copy this file to config.yaml and customize for your setup
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  metrics_port: 9090
+  # Admin API key for /admin/* endpoints (optional but recommended)
+  # admin_api_key: ${RESILLM_ADMIN_KEY}
+  # Rate limiting (optional)
+  # rate_limit:
+  #   enabled: true
+  #   requests_per_second: 10
+  #   burst: 20
+
+# Provider credentials
+# Use ${ENV_VAR} syntax to reference environment variables
+providers:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    # base_url: "https://api.openai.com/v1"  # Optional override
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    # base_url: "https://api.anthropic.com/v1"
+
+  # Azure OpenAI (optional)
+  # azure-openai:
+  #   api_key: ${AZURE_OPENAI_API_KEY}
+  #   base_url: "https://your-resource.openai.azure.com"
+  #   api_version: "2024-02-15-preview"
+
+  # Local Ollama (optional)
+  # ollama:
+  #   base_url: "http://localhost:11434"
+
+# Model routing configuration
+# Define how model requests are routed with fallbacks
+models:
+  # GPT-4o with Anthropic fallback
+  gpt-4o:
+    primary:
+      provider: openai
+      model: gpt-4o
+    fallbacks:
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+
+  # GPT-4o-mini with fallbacks
+  gpt-4o-mini:
+    primary:
+      provider: openai
+      model: gpt-4o-mini
+    fallbacks:
+      - provider: anthropic
+        model: claude-3-5-haiku-20241022
+
+  # Claude with OpenAI fallback
+  claude-sonnet:
+    primary:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    fallbacks:
+      - provider: openai
+        model: gpt-4o
+
+  # Custom alias - "fast" routes to fastest models
+  fast:
+    primary:
+      provider: anthropic
+      model: claude-3-5-haiku-20241022
+    fallbacks:
+      - provider: openai
+        model: gpt-4o-mini
+
+  # Custom alias - "smart" routes to best models
+  smart:
+    primary:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    fallbacks:
+      - provider: openai
+        model: gpt-4o
+
+  # Default fallback for unknown models
+  default:
+    primary:
+      provider: openai
+      model: gpt-4o-mini
+
+# Resilience settings
+resilience:
+  retry:
+    max_attempts: 3
+    initial_backoff: 100ms
+    max_backoff: 10s
+    backoff_multiplier: 2.0
+    retryable_errors:
+      - 429  # Rate limit
+      - 500  # Server error
+      - 502  # Bad gateway
+      - 503  # Service unavailable
+      - 504  # Gateway timeout
+
+  circuit_breaker:
+    failure_threshold: 5      # Failures before opening circuit
+    success_threshold: 3      # Successes to close circuit
+    timeout: 30s              # Time before trying again
+    half_open_max_requests: 3 # Max requests in half-open state
+
+  timeout:
+    connect: 5s
+    request: 120s             # Max time for LLM response
+
+# Cost controls (optional)
+budget:
+  enabled: false
+  max_cost_per_hour: 50.00    # USD
+  max_cost_per_day: 500.00
+  alert_threshold: 0.8        # Alert at 80%
+  action_on_exceeded: "reject" # "reject" or "allow_with_warning"
+
+# Metrics
+metrics:
+  enabled: true
+  prometheus:
+    enabled: true
+    path: /metrics
+
+# Logging
+logging:
+  level: info                 # debug, info, warn, error
+  format: json                # json or text
+  log_requests: true
+  log_responses: false        # Be careful with PII
