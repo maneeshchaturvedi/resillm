@@ -18,7 +18,7 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
 	flag.Parse()
 
-	// Setup logging
+	// Setup initial logging (will be reconfigured after config load)
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
@@ -34,6 +34,20 @@ func main() {
 		level = zerolog.InfoLevel
 	}
 	zerolog.SetGlobalLevel(level)
+
+	// Configure log format based on config
+	if cfg.Logging.Format == "json" {
+		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+	} else {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	}
+
+	log.Debug().
+		Str("level", cfg.Logging.Level).
+		Str("format", cfg.Logging.Format).
+		Bool("log_requests", cfg.Logging.LogRequests).
+		Bool("log_responses", cfg.Logging.LogResponses).
+		Msg("Logging configured")
 
 	log.Info().
 		Str("config", *configPath).

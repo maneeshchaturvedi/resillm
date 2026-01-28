@@ -69,6 +69,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		requestID = generateRequestID()
 	}
 
+	// Debug log the incoming request
+	if s.cfg.Logging.LogRequests {
+		log.Debug().
+			Str("request_id", requestID).
+			Str("model", req.Model).
+			Bool("stream", req.Stream).
+			Int("message_count", len(req.Messages)).
+			RawJSON("request_body", body).
+			Msg("Incoming chat completion request")
+	}
+
 	// Check budget before proceeding
 	if s.budget != nil {
 		budgetCheck := s.budget.Check(0) // Check with zero estimated cost for now
@@ -142,6 +153,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Resillm-Provider", meta.Provider)
 	w.Header().Set("X-Resillm-Latency-Ms", formatInt(latency.Milliseconds()))
 
+	// Debug log the response
+	if s.cfg.Logging.LogResponses {
+		respBytes, _ := json.Marshal(resp)
+		log.Debug().
+			Str("request_id", requestID).
+			RawJSON("response_body", respBytes).
+			Msg("Chat completion response")
+	}
+
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error().Err(err).Msg("Failed to encode response")
 	}
@@ -150,6 +170,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // handleStreamingChat handles streaming chat completions
 func (s *Server) handleStreamingChat(w http.ResponseWriter, r *http.Request, req *types.ChatCompletionRequest, requestID string) {
 	ctx := r.Context()
+
+	log.Debug().
+		Str("request_id", requestID).
+		Str("model", req.Model).
+		Msg("Starting streaming chat completion")
 
 	// Set streaming headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -183,12 +208,19 @@ func (s *Server) handleStreamingChat(w http.ResponseWriter, r *http.Request, req
 		case chunk, ok := <-streamChan:
 			if !ok {
 				// Stream complete
+				log.Debug().
+					Str("request_id", requestID).
+					Msg("Streaming completed")
 				w.Write([]byte("data: [DONE]\n\n"))
 				flusher.Flush()
 				return
 			}
 
 			if chunk.Error != nil {
+				log.Error().
+					Str("request_id", requestID).
+					Err(chunk.Error).
+					Msg("Streaming error")
 				writeSSEError(w, flusher, sanitizeError(chunk.Error))
 				return
 			}
@@ -197,6 +229,14 @@ func (s *Server) handleStreamingChat(w http.ResponseWriter, r *http.Request, req
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to marshal stream chunk")
 				continue
+			}
+
+			// Debug log each chunk if response logging is enabled
+			if s.cfg.Logging.LogResponses {
+				log.Debug().
+					Str("request_id", requestID).
+					RawJSON("chunk", data).
+					Msg("Streaming chunk")
 			}
 
 			w.Write([]byte("data: "))
