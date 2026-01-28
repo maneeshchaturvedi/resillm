@@ -28,19 +28,21 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
-	// Set log level
+	// Parse log level
 	level, err := zerolog.ParseLevel(cfg.Logging.Level)
 	if err != nil {
 		level = zerolog.InfoLevel
 	}
-	zerolog.SetGlobalLevel(level)
 
 	// Configure log format based on config
 	if cfg.Logging.Format == "json" {
-		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger().Level(level)
 	} else {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).Level(level)
 	}
+
+	// Also set global level as fallback
+	zerolog.SetGlobalLevel(level)
 
 	log.Debug().
 		Str("level", cfg.Logging.Level).
