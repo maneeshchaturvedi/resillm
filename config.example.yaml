@@ -42,23 +42,23 @@ providers:
 # Model routing configuration
 # Define how model requests are routed with fallbacks
 models:
-  # GPT-4o with OpenAI fallback
+  # GPT-4o with Anthropic fallback
   gpt-4o:
     primary:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: openai
+      model: gpt-4o
     fallbacks:
-      - provider: openai
-        model: gpt-4o
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
 
-  # GPT-4o-mini with OpenAI fallback
+  # GPT-4o-mini with Anthropic fallback
   gpt-4o-mini:
     primary:
-      provider: anthropic
-      model: claude-3-5-haiku-20241022
+      provider: openai
+      model: gpt-4o-mini
     fallbacks:
-      - provider: openai
-        model: gpt-4o-mini
+      - provider: anthropic
+        model: claude-3-5-haiku-20241022
 
   # Claude with OpenAI fallback
   claude-sonnet:
@@ -72,29 +72,29 @@ models:
   # Custom alias - "fast" routes to fastest models
   fast:
     primary:
-      provider: anthropic
-      model: claude-3-5-haiku-20241022
+      provider: openai
+      model: gpt-4o-mini
     fallbacks:
-      - provider: openai
-        model: gpt-4o-mini
+      - provider: anthropic
+        model: claude-3-5-haiku-20241022
 
   # Custom alias - "smart" routes to best models
   smart:
     primary:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: openai
+      model: gpt-4o
     fallbacks:
-      - provider: openai
-        model: gpt-4o
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
 
   # Default fallback for unknown models
   default:
     primary:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: openai
+      model: gpt-4o
     fallbacks:
-      - provider: openai
-        model: gpt-4o-mini
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
 
 # Resilience settings
 resilience:
