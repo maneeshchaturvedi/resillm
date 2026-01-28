@@ -130,15 +130,15 @@ type ChatCompletionChunk struct {
 	Created           int64         `json:"created"`
 	Model             string        `json:"model"`
 	Choices           []ChunkChoice `json:"choices"`
-	SystemFingerprint string        `json:"system_fingerprint,omitempty"`
+	SystemFingerprint string        `json:"system_fingerprint"` // Always present for go-openai compatibility
 }
 
 // ChunkChoice represents a choice in a streaming chunk
 type ChunkChoice struct {
-	Index        int         `json:"index"`
-	Delta        Delta       `json:"delta"`
-	FinishReason *string     `json:"finish_reason"`
-	Logprobs     *Logprobs   `json:"logprobs,omitempty"`
+	Index        int       `json:"index"`
+	Delta        Delta     `json:"delta"`
+	FinishReason string    `json:"finish_reason"` // Empty string when not finished (not null)
+	Logprobs     *Logprobs `json:"logprobs,omitempty"`
 }
 
 // Delta represents the delta content in a streaming chunk

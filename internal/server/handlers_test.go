@@ -107,29 +107,31 @@ func (m *MockProvider) ExecuteChatStream(ctx context.Context, req *types.ChatCom
 		// Content chunk
 		ch <- types.StreamChunk{
 			Data: &types.ChatCompletionChunk{
-				ID:      "chatcmpl-test",
-				Object:  "chat.completion.chunk",
-				Model:   "test-model",
-				Created: time.Now().Unix(),
+				ID:                "chatcmpl-test",
+				Object:            "chat.completion.chunk",
+				Model:             "test-model",
+				Created:           time.Now().Unix(),
+				SystemFingerprint: "fp_test",
 				Choices: []types.ChunkChoice{{
-					Index: 0,
-					Delta: types.Delta{Content: "Hello, world!"},
+					Index:        0,
+					Delta:        types.Delta{Content: "Hello, world!"},
+					FinishReason: "",
 				}},
 			},
 		}
 
 		// Final chunk
-		finishReason := "stop"
 		ch <- types.StreamChunk{
 			Data: &types.ChatCompletionChunk{
-				ID:      "chatcmpl-test",
-				Object:  "chat.completion.chunk",
-				Model:   "test-model",
-				Created: time.Now().Unix(),
+				ID:                "chatcmpl-test",
+				Object:            "chat.completion.chunk",
+				Model:             "test-model",
+				Created:           time.Now().Unix(),
+				SystemFingerprint: "fp_test",
 				Choices: []types.ChunkChoice{{
 					Index:        0,
 					Delta:        types.Delta{},
-					FinishReason: &finishReason,
+					FinishReason: "stop",
 				}},
 			},
 		}

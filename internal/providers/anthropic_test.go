@@ -578,10 +578,8 @@ func TestAnthropicProvider_ConvertStreamEvent_MessageDelta(t *testing.T) {
 		t.Fatal("expected chunk, got nil")
 	}
 
-	if result.Choices[0].FinishReason == nil {
-		t.Error("expected finish_reason to be set")
-	} else if *result.Choices[0].FinishReason != "stop" {
-		t.Errorf("expected finish_reason 'stop', got '%s'", *result.Choices[0].FinishReason)
+	if result.Choices[0].FinishReason != "stop" {
+		t.Errorf("expected finish_reason 'stop', got '%s'", result.Choices[0].FinishReason)
 	}
 }
 

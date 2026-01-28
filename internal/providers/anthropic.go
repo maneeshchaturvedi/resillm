@@ -416,48 +416,52 @@ func (p *AnthropicProvider) convertStreamEvent(event *anthropicStreamEvent, requ
 	case "content_block_delta":
 		if event.Delta != nil && event.Delta.Type == "text_delta" {
 			return &types.ChatCompletionChunk{
-				ID:      "chatcmpl-stream",
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   requestedModel,
+				ID:                "chatcmpl-stream",
+				Object:            "chat.completion.chunk",
+				Created:           time.Now().Unix(),
+				Model:             requestedModel,
+				SystemFingerprint: "fp_resillm",
 				Choices: []types.ChunkChoice{
 					{
 						Index: 0,
 						Delta: types.Delta{
 							Content: event.Delta.Text,
 						},
+						FinishReason: "",
 					},
 				},
 			}
 		}
 	case "message_start":
 		return &types.ChatCompletionChunk{
-			ID:      "chatcmpl-stream",
-			Object:  "chat.completion.chunk",
-			Created: time.Now().Unix(),
-			Model:   requestedModel,
+			ID:                "chatcmpl-stream",
+			Object:            "chat.completion.chunk",
+			Created:           time.Now().Unix(),
+			Model:             requestedModel,
+			SystemFingerprint: "fp_resillm",
 			Choices: []types.ChunkChoice{
 				{
 					Index: 0,
 					Delta: types.Delta{
 						Role: "assistant",
 					},
+					FinishReason: "",
 				},
 			},
 		}
 	case "message_delta":
 		if event.Delta != nil {
-			finishReason := "stop"
 			return &types.ChatCompletionChunk{
-				ID:      "chatcmpl-stream",
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   requestedModel,
+				ID:                "chatcmpl-stream",
+				Object:            "chat.completion.chunk",
+				Created:           time.Now().Unix(),
+				Model:             requestedModel,
+				SystemFingerprint: "fp_resillm",
 				Choices: []types.ChunkChoice{
 					{
 						Index:        0,
 						Delta:        types.Delta{},
-						FinishReason: &finishReason,
+						FinishReason: "stop",
 					},
 				},
 			}

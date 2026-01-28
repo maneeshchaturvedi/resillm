@@ -187,17 +187,24 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 				continue
 			}
 
+			finishReason := ""
+			if ollamaResp.Done {
+				finishReason = "stop"
+			}
+
 			chunk := &types.ChatCompletionChunk{
-				ID:      "chatcmpl-ollama",
-				Object:  "chat.completion.chunk",
-				Created: time.Now().Unix(),
-				Model:   req.Model,
+				ID:                "chatcmpl-ollama",
+				Object:            "chat.completion.chunk",
+				Created:           time.Now().Unix(),
+				Model:             req.Model,
+				SystemFingerprint: "fp_resillm",
 				Choices: []types.ChunkChoice{
 					{
 						Index: 0,
 						Delta: types.Delta{
 							Content: ollamaResp.Message.Content,
 						},
+						FinishReason: finishReason,
 					},
 				},
 			}
@@ -206,12 +213,6 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 			if isFirst {
 				chunk.Choices[0].Delta.Role = "assistant"
 				isFirst = false
-			}
-
-			// Set finish reason on last chunk
-			if ollamaResp.Done {
-				finishReason := "stop"
-				chunk.Choices[0].FinishReason = &finishReason
 			}
 
 			chunkChan <- types.StreamChunk{Data: chunk}
