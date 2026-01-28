@@ -199,15 +199,22 @@ func (p *AnthropicProvider) ExecuteChatStream(ctx context.Context, req *types.Ch
 		defer close(chunkChan)
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				if err != io.EOF {
+					chunkChan <- types.StreamChunk{Error: err}
+				}
+				return
+			}
 
-			if line == "" || !strings.HasPrefix(line, "data: ") {
+			lineStr := strings.TrimSpace(string(line))
+			if lineStr == "" || !strings.HasPrefix(lineStr, "data: ") {
 				continue
 			}
 
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimPrefix(lineStr, "data: ")
 
 			var event anthropicStreamEvent
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -224,10 +231,6 @@ func (p *AnthropicProvider) ExecuteChatStream(ctx context.Context, req *types.Ch
 			if event.Type == "message_stop" {
 				return
 			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			chunkChan <- types.StreamChunk{Error: err}
 		}
 	}()
 

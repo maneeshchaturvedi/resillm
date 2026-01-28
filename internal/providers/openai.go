@@ -130,21 +130,29 @@ func (p *OpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 		defer close(chunkChan)
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				if err != io.EOF {
+					chunkChan <- types.StreamChunk{Error: err}
+				}
+				return
+			}
+
+			lineStr := strings.TrimSpace(string(line))
 
 			// Skip empty lines
-			if line == "" {
+			if lineStr == "" {
 				continue
 			}
 
 			// Check for data prefix
-			if !strings.HasPrefix(line, "data: ") {
+			if !strings.HasPrefix(lineStr, "data: ") {
 				continue
 			}
 
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimPrefix(lineStr, "data: ")
 
 			// Check for done marker
 			if data == "[DONE]" {
@@ -158,10 +166,6 @@ func (p *OpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 			}
 
 			chunkChan <- types.StreamChunk{Data: &chunk}
-		}
-
-		if err := scanner.Err(); err != nil {
-			chunkChan <- types.StreamChunk{Error: err}
 		}
 	}()
 

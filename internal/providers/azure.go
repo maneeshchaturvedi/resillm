@@ -152,15 +152,23 @@ func (p *AzureOpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.
 		defer close(chunkChan)
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				if err != io.EOF {
+					chunkChan <- types.StreamChunk{Error: err}
+				}
+				return
+			}
 
-			if line == "" || !strings.HasPrefix(line, "data: ") {
+			lineStr := strings.TrimSpace(string(line))
+
+			if lineStr == "" || !strings.HasPrefix(lineStr, "data: ") {
 				continue
 			}
 
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimPrefix(lineStr, "data: ")
 
 			if data == "[DONE]" {
 				return
@@ -176,10 +184,6 @@ func (p *AzureOpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.
 			chunk.Model = req.Model
 
 			chunkChan <- types.StreamChunk{Data: &chunk}
-		}
-
-		if err := scanner.Err(); err != nil {
-			chunkChan <- types.StreamChunk{Error: err}
 		}
 	}()
 

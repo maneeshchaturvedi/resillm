@@ -159,17 +159,25 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 		defer close(chunkChan)
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
+		reader := bufio.NewReader(resp.Body)
 		isFirst := true
 
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				if err != io.EOF {
+					chunkChan <- types.StreamChunk{Error: err}
+				}
+				return
+			}
+
+			lineStr := strings.TrimSpace(string(line))
+			if lineStr == "" {
 				continue
 			}
 
 			var ollamaResp ollamaResponse
-			if err := json.Unmarshal([]byte(line), &ollamaResp); err != nil {
+			if err := json.Unmarshal([]byte(lineStr), &ollamaResp); err != nil {
 				continue
 			}
 
@@ -205,10 +213,6 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 			if ollamaResp.Done {
 				return
 			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			chunkChan <- types.StreamChunk{Error: err}
 		}
 	}()
 
