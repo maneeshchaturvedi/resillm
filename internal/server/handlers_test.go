@@ -224,7 +224,7 @@ func createTestServer(registry *MockRegistry, models map[string]config.ModelConf
 		RetryableErrors:   []int{429, 500, 502, 503, 504},
 	}
 
-	r := router.New(models, registry, circuitBreakers, retryConfig, nil)
+	r := router.New(models, registry, circuitBreakers, retryConfig, nil, 200)
 
 	cfg := &config.Config{
 		Budget: config.BudgetConfig{
@@ -884,7 +884,7 @@ func TestHandleChatCompletions_BudgetWarning(t *testing.T) {
 		RetryableErrors:   []int{429, 500, 502, 503, 504},
 	}
 
-	r := router.New(models, registry, circuitBreakers, retryConfig, nil)
+	r := router.New(models, registry, circuitBreakers, retryConfig, nil, 200)
 
 	cfg := &config.Config{
 		Budget: config.BudgetConfig{

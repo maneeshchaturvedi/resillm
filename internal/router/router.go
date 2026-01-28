@@ -26,6 +26,7 @@ type Router struct {
 	circuitBreakers map[string]*resilience.CircuitBreaker
 	retryConfig     config.RetryConfig
 	metrics         *metrics.Collector
+	semaphores      *providers.ProviderSemaphores // Limits concurrent requests per provider
 
 	mu sync.RWMutex
 }
@@ -37,6 +38,7 @@ func New(
 	circuitBreakers map[string]*resilience.CircuitBreaker,
 	retryConfig config.RetryConfig,
 	metricsCollector *metrics.Collector,
+	maxConcurrentPerProvider int,
 ) *Router {
 	return &Router{
 		models:          models,
@@ -44,6 +46,7 @@ func New(
 		circuitBreakers: circuitBreakers,
 		retryConfig:     retryConfig,
 		metrics:         metricsCollector,
+		semaphores:      providers.NewProviderSemaphores(maxConcurrentPerProvider),
 	}
 }
 
@@ -92,11 +95,21 @@ func (r *Router) ExecuteChat(ctx context.Context, req *types.ChatCompletionReque
 			continue
 		}
 
-		// Execute with retry
+		// Acquire semaphore to limit concurrent requests to this provider
+		sem := r.semaphores.Get(endpoint.Provider)
+		if err := sem.Acquire(ctx); err != nil {
+			log.Debug().
+				Str("provider", endpoint.Provider).
+				Msg("Context cancelled while waiting for semaphore")
+			continue
+		}
+
+		// Execute with retry (release semaphore after execution)
 		retrier := resilience.NewRetrier(r.retryConfig)
 		result, attempts, err := retrier.ExecuteWithResult(ctx, func() (interface{}, error) {
 			return provider.ExecuteChat(ctx, req, endpoint.Model)
 		})
+		sem.Release()
 
 		meta.Retries += attempts - 1 // Don't count first attempt as retry
 
@@ -176,10 +189,20 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 			continue
 		}
 
+		// Acquire semaphore to limit concurrent requests to this provider
+		sem := r.semaphores.Get(endpoint.Provider)
+		if err := sem.Acquire(ctx); err != nil {
+			log.Debug().
+				Str("provider", endpoint.Provider).
+				Msg("Context cancelled while waiting for semaphore")
+			continue
+		}
+
 		// For streaming, we don't retry at the request level
 		// (would need to buffer, which defeats the purpose)
 		streamChan, err := provider.ExecuteChatStream(ctx, req, endpoint.Model)
 		if err != nil {
+			sem.Release() // Release on error
 			lastErr = err
 			if cb != nil {
 				cb.RecordFailure()
@@ -187,7 +210,7 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 			continue
 		}
 
-		// Success
+		// Success - wrap channel to release semaphore when stream completes
 		if cb != nil {
 			cb.RecordSuccess()
 		}
@@ -196,7 +219,17 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 		meta.ActualModel = endpoint.Model
 		meta.Fallback = i > 0
 
-		return streamChan, meta, nil
+		// Wrap the channel to release semaphore when stream completes
+		wrappedChan := make(chan types.StreamChunk, cap(streamChan))
+		go func() {
+			defer close(wrappedChan)
+			defer sem.Release()
+			for chunk := range streamChan {
+				wrappedChan <- chunk
+			}
+		}()
+
+		return wrappedChan, meta, nil
 	}
 
 	return nil, meta, fmt.Errorf("all providers failed: %w", lastErr)

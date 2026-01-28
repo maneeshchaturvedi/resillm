@@ -138,17 +138,16 @@ func (p *OpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 		defer close(chunkChan)
 		defer resp.Body.Close()
 
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				if err != io.EOF {
-					chunkChan <- types.StreamChunk{Error: err}
-				}
-				return
-			}
+		// Use bounded scanner to prevent memory exhaustion from malicious/buggy upstreams
+		// Memory usage bounded to 512KB per stream (configurable)
+		buf := getBuffer()
+		defer putBuffer(buf)
 
-			lineStr := strings.TrimSpace(string(line))
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(buf, DefaultScannerMaxBuf)
+
+		for scanner.Scan() {
+			lineStr := strings.TrimSpace(scanner.Text())
 
 			// Skip empty lines
 			if lineStr == "" {
@@ -174,6 +173,14 @@ func (p *OpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 			}
 
 			chunkChan <- types.StreamChunk{Data: &chunk}
+		}
+
+		if err := scanner.Err(); err != nil {
+			if err == bufio.ErrTooLong {
+				chunkChan <- types.StreamChunk{Error: fmt.Errorf("stream line exceeded maximum size of %d bytes", DefaultScannerMaxBuf)}
+			} else {
+				chunkChan <- types.StreamChunk{Error: err}
+			}
 		}
 	}()
 

@@ -24,7 +24,23 @@ type HTTPClientConfig struct {
 	IdleConnTimeout     time.Duration
 }
 
+// Connection pool defaults optimized for high concurrency (1000+ requests)
+const (
+	// DefaultMaxIdleConns is the maximum number of idle connections across all hosts.
+	// Set high enough to handle concurrent requests to multiple providers.
+	DefaultMaxIdleConns = 500
+
+	// DefaultMaxIdleConnsPerHost is the maximum number of idle connections per host.
+	// Should be high enough to avoid connection churn under load.
+	DefaultMaxIdleConnsPerHost = 100
+
+	// DefaultMaxConnsPerHost is the maximum total connections per host.
+	// At 1000 concurrent requests across 3-4 providers, each host needs ~250-300.
+	DefaultMaxConnsPerHost = 250
+)
+
 // DefaultHTTPClientConfig returns sensible defaults for HTTP client configuration.
+// Defaults are optimized for high concurrency scenarios (1000+ concurrent requests).
 func DefaultHTTPClientConfig(timeout config.TimeoutConfig) HTTPClientConfig {
 	connectTimeout := timeout.Connect
 	if connectTimeout == 0 {
@@ -39,9 +55,9 @@ func DefaultHTTPClientConfig(timeout config.TimeoutConfig) HTTPClientConfig {
 	return HTTPClientConfig{
 		ConnectTimeout:      connectTimeout,
 		RequestTimeout:      requestTimeout,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     50,
+		MaxIdleConns:        DefaultMaxIdleConns,
+		MaxIdleConnsPerHost: DefaultMaxIdleConnsPerHost,
+		MaxConnsPerHost:     DefaultMaxConnsPerHost,
 		IdleConnTimeout:     90 * time.Second,
 	}
 }

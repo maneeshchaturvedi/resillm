@@ -167,19 +167,17 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 		defer close(chunkChan)
 		defer resp.Body.Close()
 
-		reader := bufio.NewReader(resp.Body)
+		// Use bounded scanner to prevent memory exhaustion from malicious/buggy upstreams
+		buf := getBuffer()
+		defer putBuffer(buf)
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(buf, DefaultScannerMaxBuf)
+
 		isFirst := true
 
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				if err != io.EOF {
-					chunkChan <- types.StreamChunk{Error: err}
-				}
-				return
-			}
-
-			lineStr := strings.TrimSpace(string(line))
+		for scanner.Scan() {
+			lineStr := strings.TrimSpace(scanner.Text())
 			if lineStr == "" {
 				continue
 			}
@@ -220,6 +218,14 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 
 			if ollamaResp.Done {
 				return
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			if err == bufio.ErrTooLong {
+				chunkChan <- types.StreamChunk{Error: fmt.Errorf("stream line exceeded maximum size of %d bytes", DefaultScannerMaxBuf)}
+			} else {
+				chunkChan <- types.StreamChunk{Error: err}
 			}
 		}
 	}()

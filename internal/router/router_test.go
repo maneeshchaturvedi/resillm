@@ -173,7 +173,7 @@ func createTestRouter(registry *MockRegistry, models map[string]config.ModelConf
 		RetryableErrors:   []int{429, 500, 502, 503, 504},
 	}
 
-	return New(models, (*providers.Registry)(nil), circuitBreakers, retryConfig, nil)
+	return New(models, (*providers.Registry)(nil), circuitBreakers, retryConfig, nil, 200)
 }
 
 // Tests
@@ -528,6 +528,7 @@ func createTestRouterWithRegistry(registry *MockRegistry, models map[string]conf
 		circuitBreakers: circuitBreakers,
 		retryConfig:     retryConfig,
 		metrics:         nil,
+		semaphores:      providers.NewProviderSemaphores(200),
 	}
 
 	// Create a wrapper to use MockRegistry

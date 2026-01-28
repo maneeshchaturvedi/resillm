@@ -103,13 +103,16 @@ func NewWithPath(cfg *config.Config, configPath string) (*Server, error) {
 		)
 	}
 
-	// Initialize router
+	// Initialize router with semaphore for limiting concurrent requests per provider
+	// Default to 200 concurrent requests per provider to provide backpressure
+	maxConcurrentPerProvider := 200
 	r := router.New(
 		cfg.Models,
 		providerRegistry,
 		circuitBreakers,
 		cfg.Resilience.Retry,
 		metricsCollector,
+		maxConcurrentPerProvider,
 	)
 
 	// Setup HTTP handlers
