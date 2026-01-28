@@ -27,17 +27,17 @@ const (
 
 // scannerBufferPool provides reusable buffers for streaming to reduce GC pressure.
 // Each buffer starts at 64KB and can grow up to 512KB max.
+// IMPORTANT: Store slices directly, not pointers - pointers to local variables
+// become invalid after the function returns, causing memory corruption.
 var scannerBufferPool = sync.Pool{
 	New: func() interface{} {
-		buf := make([]byte, 0, DefaultScannerInitialBuf)
-		return &buf
+		return make([]byte, 0, DefaultScannerInitialBuf)
 	},
 }
 
 // getBuffer retrieves a buffer from the pool.
 func getBuffer() []byte {
-	bufPtr := scannerBufferPool.Get().(*[]byte)
-	buf := *bufPtr
+	buf := scannerBufferPool.Get().([]byte)
 	return buf[:0] // Reset length but keep capacity
 }
 
@@ -47,7 +47,7 @@ func putBuffer(buf []byte) {
 	// Don't pool buffers that have grown beyond 2x the initial size
 	// to prevent memory bloat from outlier large responses
 	if cap(buf) <= DefaultScannerInitialBuf*2 {
-		scannerBufferPool.Put(&buf)
+		scannerBufferPool.Put(buf[:0]) // Reset length before returning to pool
 	}
 }
 
