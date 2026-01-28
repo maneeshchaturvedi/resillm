@@ -16,9 +16,10 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
+	apiKey           string
+	baseURL          string
+	httpClient       *http.Client
+	streamBufferSize int
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
@@ -28,10 +29,16 @@ func NewOpenAIProvider(cfg config.ProviderConfig, httpClient *http.Client) (*Ope
 		baseURL = "https://api.openai.com/v1"
 	}
 
+	bufferSize := cfg.StreamBufferSize
+	if bufferSize <= 0 {
+		bufferSize = DefaultStreamBufferSize
+	}
+
 	return &OpenAIProvider{
-		apiKey:     cfg.APIKey,
-		baseURL:    strings.TrimSuffix(baseURL, "/"),
-		httpClient: httpClient,
+		apiKey:           cfg.APIKey,
+		baseURL:          strings.TrimSuffix(baseURL, "/"),
+		httpClient:       httpClient,
+		streamBufferSize: bufferSize,
 	}, nil
 }
 
@@ -124,7 +131,8 @@ func (p *OpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 		}
 	}
 
-	chunkChan := make(chan types.StreamChunk)
+	// Use buffered channel to prevent goroutine blocking when consumer is slow
+	chunkChan := make(chan types.StreamChunk, p.streamBufferSize)
 
 	go func() {
 		defer close(chunkChan)
@@ -221,10 +229,16 @@ func NewOpenAICompatibleProvider(name string, cfg config.ProviderConfig, httpCli
 		return nil, fmt.Errorf("base_url is required for OpenAI-compatible provider %s", name)
 	}
 
+	bufferSize := cfg.StreamBufferSize
+	if bufferSize <= 0 {
+		bufferSize = DefaultStreamBufferSize
+	}
+
 	return &OpenAIProvider{
-		apiKey:     cfg.APIKey,
-		baseURL:    strings.TrimSuffix(cfg.BaseURL, "/"),
-		httpClient: httpClient,
+		apiKey:           cfg.APIKey,
+		baseURL:          strings.TrimSuffix(cfg.BaseURL, "/"),
+		httpClient:       httpClient,
+		streamBufferSize: bufferSize,
 	}, nil
 }
 

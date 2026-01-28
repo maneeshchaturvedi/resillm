@@ -17,8 +17,9 @@ import (
 
 // OllamaProvider implements the Provider interface for Ollama
 type OllamaProvider struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL          string
+	httpClient       *http.Client
+	streamBufferSize int
 }
 
 // Ollama-specific types
@@ -61,9 +62,15 @@ func NewOllamaProvider(cfg config.ProviderConfig, httpClient *http.Client) (*Oll
 		baseURL = "http://localhost:11434"
 	}
 
+	bufferSize := cfg.StreamBufferSize
+	if bufferSize <= 0 {
+		bufferSize = DefaultStreamBufferSize
+	}
+
 	return &OllamaProvider{
-		baseURL:    strings.TrimSuffix(baseURL, "/"),
-		httpClient: httpClient,
+		baseURL:          strings.TrimSuffix(baseURL, "/"),
+		httpClient:       httpClient,
+		streamBufferSize: bufferSize,
 	}, nil
 }
 
@@ -153,7 +160,8 @@ func (p *OllamaProvider) ExecuteChatStream(ctx context.Context, req *types.ChatC
 		}
 	}
 
-	chunkChan := make(chan types.StreamChunk)
+	// Use buffered channel to prevent goroutine blocking when consumer is slow
+	chunkChan := make(chan types.StreamChunk, p.streamBufferSize)
 
 	go func() {
 		defer close(chunkChan)

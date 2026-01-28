@@ -18,9 +18,10 @@ import (
 
 // Request validation limits
 const (
-	MaxMessageSize = 32 * 1024 // 32KB per message
+	MaxMessageSize = 32 * 1024      // 32KB per message
 	MaxMessages    = 100
 	MaxTokensLimit = 100000
+	MaxBodySize    = 5 * 1024 * 1024 // 5MB hard limit for request body
 )
 
 // Regex patterns for sanitizing sensitive data
@@ -33,9 +34,18 @@ var (
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Enforce body size limit to prevent DoS attacks
+	r.Body = http.MaxBytesReader(w, r.Body, MaxBodySize)
+
 	// Parse request
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// Check if error is due to body size exceeded
+		if err.Error() == "http: request body too large" {
+			s.writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+				fmt.Sprintf("Request body exceeds maximum size of %d bytes", MaxBodySize))
+			return
+		}
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "Failed to read request body")
 		return
 	}

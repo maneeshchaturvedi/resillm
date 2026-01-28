@@ -45,7 +45,10 @@ func TestNewAnthropicProvider_CustomBaseURL(t *testing.T) {
 }
 
 func TestAnthropicProvider_Name(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	if provider.Name() != "anthropic" {
 		t.Errorf("expected 'anthropic', got '%s'", provider.Name())
@@ -53,7 +56,10 @@ func TestAnthropicProvider_Name(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_Basic(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -85,7 +91,10 @@ func TestAnthropicProvider_ConvertRequest_Basic(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_SystemMessage(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -112,7 +121,10 @@ func TestAnthropicProvider_ConvertRequest_SystemMessage(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_MaxTokens(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	maxTokens := 2048
 	req := &types.ChatCompletionRequest{
@@ -134,7 +146,10 @@ func TestAnthropicProvider_ConvertRequest_MaxTokens(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_Temperature(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	temp := 0.7
 	req := &types.ChatCompletionRequest{
@@ -156,7 +171,10 @@ func TestAnthropicProvider_ConvertRequest_Temperature(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_StopSequences_String(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -177,7 +195,10 @@ func TestAnthropicProvider_ConvertRequest_StopSequences_String(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_StopSequences_Array(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -198,7 +219,10 @@ func TestAnthropicProvider_ConvertRequest_StopSequences_Array(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_Tools(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -244,7 +268,10 @@ func TestAnthropicProvider_ConvertRequest_Tools(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_MultimodalContent(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -290,7 +317,10 @@ func TestAnthropicProvider_ConvertRequest_MultimodalContent(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertRequest_Conversation(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	req := &types.ChatCompletionRequest{
 		Model: "gpt-4o",
@@ -325,7 +355,10 @@ func TestAnthropicProvider_ConvertRequest_Conversation(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertResponse_Basic(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	resp := &anthropicResponse{
 		ID:   "msg_12345",
@@ -374,7 +407,10 @@ func TestAnthropicProvider_ConvertResponse_Basic(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertResponse_MultipleContentBlocks(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	resp := &anthropicResponse{
 		ID:   "msg_12345",
@@ -401,7 +437,10 @@ func TestAnthropicProvider_ConvertResponse_MultipleContentBlocks(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertResponse_StopReasons(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	tests := []struct {
 		stopReason     string
@@ -431,7 +470,10 @@ func TestAnthropicProvider_ConvertResponse_StopReasons(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertResponse_Usage(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	resp := &anthropicResponse{
 		ID:      "msg_12345",
@@ -459,7 +501,10 @@ func TestAnthropicProvider_ConvertResponse_Usage(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertStreamEvent_ContentBlockDelta(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	event := &anthropicStreamEvent{
 		Type:  "content_block_delta",
@@ -494,7 +539,10 @@ func TestAnthropicProvider_ConvertStreamEvent_ContentBlockDelta(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertStreamEvent_MessageStart(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	event := &anthropicStreamEvent{
 		Type: "message_start",
@@ -512,7 +560,10 @@ func TestAnthropicProvider_ConvertStreamEvent_MessageStart(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertStreamEvent_MessageDelta(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	event := &anthropicStreamEvent{
 		Type: "message_delta",
@@ -535,7 +586,10 @@ func TestAnthropicProvider_ConvertStreamEvent_MessageDelta(t *testing.T) {
 }
 
 func TestAnthropicProvider_ConvertStreamEvent_IgnoresUnknownType(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	event := &anthropicStreamEvent{
 		Type: "ping",
@@ -549,7 +603,10 @@ func TestAnthropicProvider_ConvertStreamEvent_IgnoresUnknownType(t *testing.T) {
 }
 
 func TestAnthropicProvider_CalculateCost(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	tests := []struct {
 		model    string
@@ -603,7 +660,10 @@ func TestAnthropicProvider_CalculateCost(t *testing.T) {
 }
 
 func TestAnthropicProvider_CalculateCost_SmallUsage(t *testing.T) {
-	provider := &AnthropicProvider{}
+	provider := &AnthropicProvider{
+		maxTokensDefault: DefaultAnthropicMaxTokens,
+		streamBufferSize: DefaultStreamBufferSize,
+	}
 
 	usage := types.Usage{
 		PromptTokens:     1000,  // 1K tokens

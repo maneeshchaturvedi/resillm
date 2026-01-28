@@ -19,20 +19,25 @@ providers:
   openai:
     api_key: ${OPENAI_API_KEY}
     # base_url: "https://api.openai.com/v1"  # Optional override
+    # stream_buffer_size: 32                 # Buffer size for streaming (default: 32)
 
   anthropic:
     api_key: ${ANTHROPIC_API_KEY}
     # base_url: "https://api.anthropic.com/v1"
+    # max_tokens_default: 4096               # Default max_tokens if not in request
+    # stream_buffer_size: 32                 # Buffer size for streaming (default: 32)
 
   # Azure OpenAI (optional)
   # azure-openai:
   #   api_key: ${AZURE_OPENAI_API_KEY}
   #   base_url: "https://your-resource.openai.azure.com"
-  #   api_version: "2024-02-15-preview"
+  #   api_version: "2024-10-21"              # Update as Azure releases new versions
+  #   stream_buffer_size: 32
 
   # Local Ollama (optional)
   # ollama:
   #   base_url: "http://localhost:11434"
+  #   stream_buffer_size: 32
 
 # Model routing configuration
 # Define how model requests are routed with fallbacks

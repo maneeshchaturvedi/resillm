@@ -17,10 +17,26 @@ import (
 
 // AnthropicProvider implements the Provider interface for Anthropic
 type AnthropicProvider struct {
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
+	apiKey           string
+	baseURL          string
+	httpClient       *http.Client
+	maxTokensDefault int
+	streamBufferSize int
 }
+
+// Anthropic model max output token limits
+var anthropicModelMaxTokens = map[string]int{
+	"claude-3-5-haiku-20241022":  8192,
+	"claude-3-haiku-20240307":    4096,
+	"claude-3-sonnet-20240229":   4096,
+	"claude-3-5-sonnet-20241022": 8192,
+	"claude-sonnet-4-20250514":   16384,
+	"claude-3-opus-20240229":     4096,
+	"claude-opus-4-20250514":     32000,
+}
+
+// DefaultAnthropicMaxTokens is the default max_tokens if not specified
+const DefaultAnthropicMaxTokens = 4096
 
 // Anthropic-specific types
 type anthropicRequest struct {
@@ -95,10 +111,22 @@ func NewAnthropicProvider(cfg config.ProviderConfig, httpClient *http.Client) (*
 		baseURL = "https://api.anthropic.com/v1"
 	}
 
+	maxTokens := cfg.MaxTokensDefault
+	if maxTokens <= 0 {
+		maxTokens = DefaultAnthropicMaxTokens
+	}
+
+	bufferSize := cfg.StreamBufferSize
+	if bufferSize <= 0 {
+		bufferSize = DefaultStreamBufferSize
+	}
+
 	return &AnthropicProvider{
-		apiKey:     cfg.APIKey,
-		baseURL:    strings.TrimSuffix(baseURL, "/"),
-		httpClient: httpClient,
+		apiKey:           cfg.APIKey,
+		baseURL:          strings.TrimSuffix(baseURL, "/"),
+		httpClient:       httpClient,
+		maxTokensDefault: maxTokens,
+		streamBufferSize: bufferSize,
 	}, nil
 }
 
@@ -193,7 +221,8 @@ func (p *AnthropicProvider) ExecuteChatStream(ctx context.Context, req *types.Ch
 		}
 	}
 
-	chunkChan := make(chan types.StreamChunk)
+	// Use buffered channel to prevent goroutine blocking when consumer is slow
+	chunkChan := make(chan types.StreamChunk, p.streamBufferSize)
 
 	go func() {
 		defer close(chunkChan)
@@ -242,15 +271,24 @@ func (p *AnthropicProvider) convertRequest(req *types.ChatCompletionRequest, mod
 		model = req.Model
 	}
 
-	anthropicReq := &anthropicRequest{
-		Model:       model,
-		MaxTokens:   4096, // Default
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
+	// Determine max_tokens: use request value, then config default, then model-specific limit
+	maxTokens := p.maxTokensDefault
+	if req.MaxTokens != nil {
+		maxTokens = *req.MaxTokens
 	}
 
-	if req.MaxTokens != nil {
-		anthropicReq.MaxTokens = *req.MaxTokens
+	// Apply model-specific limit if known
+	if modelLimit, ok := anthropicModelMaxTokens[model]; ok {
+		if maxTokens > modelLimit {
+			maxTokens = modelLimit
+		}
+	}
+
+	anthropicReq := &anthropicRequest{
+		Model:       model,
+		MaxTokens:   maxTokens,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
 	}
 
 	// Extract system message and convert other messages

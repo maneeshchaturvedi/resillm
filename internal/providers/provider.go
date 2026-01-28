@@ -3,8 +3,6 @@ package providers
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"time"
 
 	"github.com/resillm/resillm/internal/config"
 	"github.com/resillm/resillm/internal/types"
@@ -39,15 +37,10 @@ func NewRegistry(configs map[string]config.ProviderConfig, timeout config.Timeou
 		providers: make(map[string]Provider),
 	}
 
-	// Create HTTP client with timeouts
-	httpClient := &http.Client{
-		Timeout: timeout.Request,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
-	}
+	// Create HTTP client with proper timeout configuration
+	// Uses connect timeout for dial and TLS handshake, not just request timeout
+	httpClientCfg := DefaultHTTPClientConfig(timeout)
+	httpClient := NewHTTPClient(httpClientCfg)
 
 	for name, cfg := range configs {
 		var provider Provider

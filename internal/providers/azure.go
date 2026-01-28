@@ -16,11 +16,16 @@ import (
 
 // AzureOpenAIProvider implements the Provider interface for Azure OpenAI
 type AzureOpenAIProvider struct {
-	apiKey     string
-	baseURL    string
-	apiVersion string
-	httpClient *http.Client
+	apiKey           string
+	baseURL          string
+	apiVersion       string
+	httpClient       *http.Client
+	streamBufferSize int
 }
+
+// DefaultAzureAPIVersion is the default API version for Azure OpenAI
+// Update this periodically as Azure releases new stable versions
+const DefaultAzureAPIVersion = "2024-10-21"
 
 // NewAzureOpenAIProvider creates a new Azure OpenAI provider
 func NewAzureOpenAIProvider(cfg config.ProviderConfig, httpClient *http.Client) (*AzureOpenAIProvider, error) {
@@ -30,14 +35,20 @@ func NewAzureOpenAIProvider(cfg config.ProviderConfig, httpClient *http.Client) 
 
 	apiVersion := cfg.APIVersion
 	if apiVersion == "" {
-		apiVersion = "2024-02-15-preview"
+		apiVersion = DefaultAzureAPIVersion
+	}
+
+	bufferSize := cfg.StreamBufferSize
+	if bufferSize <= 0 {
+		bufferSize = DefaultStreamBufferSize
 	}
 
 	return &AzureOpenAIProvider{
-		apiKey:     cfg.APIKey,
-		baseURL:    strings.TrimSuffix(cfg.BaseURL, "/"),
-		apiVersion: apiVersion,
-		httpClient: httpClient,
+		apiKey:           cfg.APIKey,
+		baseURL:          strings.TrimSuffix(cfg.BaseURL, "/"),
+		apiVersion:       apiVersion,
+		httpClient:       httpClient,
+		streamBufferSize: bufferSize,
 	}, nil
 }
 
@@ -146,7 +157,8 @@ func (p *AzureOpenAIProvider) ExecuteChatStream(ctx context.Context, req *types.
 		}
 	}
 
-	chunkChan := make(chan types.StreamChunk)
+	// Use buffered channel to prevent goroutine blocking when consumer is slow
+	chunkChan := make(chan types.StreamChunk, p.streamBufferSize)
 
 	go func() {
 		defer close(chunkChan)
