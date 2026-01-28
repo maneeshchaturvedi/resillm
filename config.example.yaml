@@ -42,23 +42,23 @@ providers:
 # Model routing configuration
 # Define how model requests are routed with fallbacks
 models:
-  # GPT-4o with Anthropic fallback
+  # GPT-4o with OpenAI fallback
   gpt-4o:
     primary:
-      provider: openai
-      model: gpt-4o
+      provider: anthropic
+      model: claude-sonnet-4-20250514
     fallbacks:
-      - provider: anthropic
-        model: claude-sonnet-4-20250514
+      - provider: openai
+        model: gpt-4o
 
-  # GPT-4o-mini with Anthropic fallback
+  # GPT-4o-mini with OpenAI fallback
   gpt-4o-mini:
     primary:
-      provider: openai
-      model: gpt-4o-mini
+      provider: anthropic
+      model: claude-3-5-haiku-20241022
     fallbacks:
-      - provider: anthropic
-        model: claude-3-5-haiku-20241022
+      - provider: openai
+        model: gpt-4o-mini
 
   # Claude with OpenAI fallback
   claude-sonnet:
@@ -72,29 +72,29 @@ models:
   # Custom alias - "fast" routes to fastest models
   fast:
     primary:
-      provider: openai
-      model: gpt-4o-mini
+      provider: anthropic
+      model: claude-3-5-haiku-20241022
     fallbacks:
-      - provider: anthropic
-        model: claude-3-5-haiku-20241022
+      - provider: openai
+        model: gpt-4o-mini
 
   # Custom alias - "smart" routes to best models
   smart:
     primary:
-      provider: openai
-      model: gpt-4o
+      provider: anthropic
+      model: claude-sonnet-4-20250514
     fallbacks:
-      - provider: anthropic
-        model: claude-sonnet-4-20250514
+      - provider: openai
+        model: gpt-4o
 
   # Default fallback for unknown models
   default:
     primary:
-      provider: openai
-      model: gpt-4o
+      provider: anthropic
+      model: claude-sonnet-4-20250514
     fallbacks:
-      - provider: anthropic
-        model: claude-sonnet-4-20250514
+      - provider: openai
+        model: gpt-4o
 
 # Resilience settings
 resilience:
@@ -137,7 +137,7 @@ metrics:
 
 # Logging
 logging:
-  level: info                 # debug, info, warn, error
+  level: debug                # debug, info, warn, error
   format: json                # json or text
   log_requests: true
-  log_responses: false        # Be careful with PII
+  log_responses: true         # Enable for debugging
