@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,21 +29,24 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
+	// Add immediate feedback that doesn't depend on logger
+	fmt.Fprintf(os.Stderr, "resillm starting with config: %s\n", *configPath)
+
 	// Parse log level
 	level, err := zerolog.ParseLevel(cfg.Logging.Level)
 	if err != nil {
 		level = zerolog.InfoLevel
 	}
 
-	// Configure log format based on config
-	if cfg.Logging.Format == "json" {
-		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger().Level(level)
-	} else {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).Level(level)
-	}
-
-	// Also set global level as fallback
+	// Set global level first - this is the proper way to control level filtering
 	zerolog.SetGlobalLevel(level)
+
+	// Configure log format based on config (don't chain .Level() - use global level instead)
+	if cfg.Logging.Format == "json" {
+		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+	} else {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	}
 
 	log.Debug().
 		Str("level", cfg.Logging.Level).
