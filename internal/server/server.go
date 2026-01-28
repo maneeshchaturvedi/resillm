@@ -15,7 +15,6 @@ import (
 	"github.com/resillm/resillm/internal/resilience"
 	"github.com/resillm/resillm/internal/router"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/time/rate"
 )
 
 // Server represents the resillm proxy server
@@ -28,44 +27,16 @@ type Server struct {
 	budget     *budget.Tracker
 	watcher    *config.Watcher
 
-	// Rate limiter
-	rateLimiter *RateLimiter
+	// Rate limiter (sharded for high concurrency)
+	rateLimiter *ShardedRateLimiter
+
+	// Load shedder for overload protection
+	loadShedder *LoadShedder
 
 	// For thread-safe config updates
 	mu               sync.RWMutex
 	circuitBreakers  map[string]*resilience.CircuitBreaker
 	providerRegistry *providers.Registry
-}
-
-// RateLimiter implements per-IP rate limiting
-type RateLimiter struct {
-	limiters map[string]*rate.Limiter
-	mu       sync.RWMutex
-	rate     rate.Limit
-	burst    int
-}
-
-// NewRateLimiter creates a new rate limiter
-func NewRateLimiter(rps float64, burst int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
-		rate:     rate.Limit(rps),
-		burst:    burst,
-	}
-}
-
-// GetLimiter returns the rate limiter for a given IP
-func (rl *RateLimiter) GetLimiter(ip string) *rate.Limiter {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	limiter, exists := rl.limiters[ip]
-	if !exists {
-		limiter = rate.NewLimiter(rl.rate, rl.burst)
-		rl.limiters[ip] = limiter
-	}
-
-	return limiter
 }
 
 // New creates a new server instance
@@ -118,10 +89,19 @@ func NewWithPath(cfg *config.Config, configPath string) (*Server, error) {
 	// Setup HTTP handlers
 	mux := http.NewServeMux()
 
-	// Initialize rate limiter if enabled
-	var rateLimiter *RateLimiter
+	// Initialize rate limiter if enabled (sharded for high concurrency)
+	var rateLimiter *ShardedRateLimiter
 	if cfg.Server.RateLimit.Enabled {
-		rateLimiter = NewRateLimiter(cfg.Server.RateLimit.RequestsPerSecond, cfg.Server.RateLimit.Burst)
+		rateLimiter = NewShardedRateLimiter(cfg.Server.RateLimit.RequestsPerSecond, cfg.Server.RateLimit.Burst)
+	}
+
+	// Initialize load shedder if enabled
+	var loadShedder *LoadShedder
+	if cfg.Server.LoadShedding.Enabled {
+		loadShedder = NewLoadShedder(
+			cfg.Server.LoadShedding.MaxActiveRequests,
+			cfg.Server.LoadShedding.MaxConnectionsPerIP,
+		)
 	}
 
 	s := &Server{
@@ -133,6 +113,7 @@ func NewWithPath(cfg *config.Config, configPath string) (*Server, error) {
 		circuitBreakers:  circuitBreakers,
 		providerRegistry: providerRegistry,
 		rateLimiter:      rateLimiter,
+		loadShedder:      loadShedder,
 	}
 
 	// OpenAI-compatible endpoints
@@ -148,12 +129,15 @@ func NewWithPath(cfg *config.Config, configPath string) (*Server, error) {
 	// Admin endpoints (protected with authentication)
 	mux.HandleFunc("POST /admin/reload", s.adminAuthMiddleware(s.handleReload))
 
-	// Wrap with middleware chain
+	// Wrap with middleware chain (order matters: outer middleware runs first)
 	handler := s.securityHeadersMiddleware(mux)
 	handler = s.loggingMiddleware(handler)
 	handler = s.metricsMiddleware(handler)
 	if rateLimiter != nil {
 		handler = s.rateLimitMiddleware(handler)
+	}
+	if loadShedder != nil {
+		handler = loadShedder.Middleware(handler)
 	}
 
 	s.httpServer = &http.Server{
@@ -162,6 +146,11 @@ func NewWithPath(cfg *config.Config, configPath string) (*Server, error) {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: cfg.Resilience.Timeout.Request + 10*time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// Set connection state handler for per-IP connection limiting
+	if loadShedder != nil {
+		s.httpServer.ConnState = loadShedder.ConnStateHandler
 	}
 
 	// Setup config watcher if path is provided
@@ -270,6 +259,11 @@ func (s *Server) Run(ctx context.Context) error {
 			log.Error().Err(err).Msg("Failed to start config watcher")
 		}
 		defer s.watcher.Stop()
+	}
+
+	// Ensure rate limiter cleanup goroutine is stopped on shutdown
+	if s.rateLimiter != nil {
+		defer s.rateLimiter.Stop()
 	}
 
 	// Start metrics server if enabled

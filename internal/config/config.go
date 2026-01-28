@@ -24,11 +24,12 @@ type Config struct {
 
 // ServerConfig defines HTTP server settings
 type ServerConfig struct {
-	Host        string          `yaml:"host"`
-	Port        int             `yaml:"port"`
-	MetricsPort int             `yaml:"metrics_port"`
-	AdminAPIKey string          `yaml:"admin_api_key"` // API key for admin endpoints
-	RateLimit   RateLimitConfig `yaml:"rate_limit"`
+	Host         string             `yaml:"host"`
+	Port         int                `yaml:"port"`
+	MetricsPort  int                `yaml:"metrics_port"`
+	AdminAPIKey  string             `yaml:"admin_api_key"` // API key for admin endpoints
+	RateLimit    RateLimitConfig    `yaml:"rate_limit"`
+	LoadShedding LoadSheddingConfig `yaml:"load_shedding"`
 }
 
 // RateLimitConfig defines rate limiting settings
@@ -36,6 +37,13 @@ type RateLimitConfig struct {
 	Enabled           bool    `yaml:"enabled"`
 	RequestsPerSecond float64 `yaml:"requests_per_second"`
 	Burst             int     `yaml:"burst"`
+}
+
+// LoadSheddingConfig defines load shedding settings
+type LoadSheddingConfig struct {
+	Enabled             bool  `yaml:"enabled"`
+	MaxActiveRequests   int64 `yaml:"max_active_requests"`    // Max concurrent requests (0 = unlimited)
+	MaxConnectionsPerIP int64 `yaml:"max_connections_per_ip"` // Max connections per IP (0 = unlimited)
 }
 
 // ProviderConfig defines settings for an LLM provider
@@ -215,6 +223,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Resilience.CircuitBreaker.Timeout == 0 {
 		cfg.Resilience.CircuitBreaker.Timeout = 30 * time.Second
 	}
+	if cfg.Resilience.CircuitBreaker.HalfOpenMaxRequests == 0 {
+		cfg.Resilience.CircuitBreaker.HalfOpenMaxRequests = 50
+	}
 
 	if cfg.Resilience.Timeout.Connect == 0 {
 		cfg.Resilience.Timeout.Connect = 5 * time.Second
@@ -251,6 +262,16 @@ func applyDefaults(cfg *Config) {
 		}
 		if cfg.Server.RateLimit.Burst == 0 {
 			cfg.Server.RateLimit.Burst = 20
+		}
+	}
+
+	// Load shedding defaults (applied only when enabled)
+	if cfg.Server.LoadShedding.Enabled {
+		if cfg.Server.LoadShedding.MaxActiveRequests == 0 {
+			cfg.Server.LoadShedding.MaxActiveRequests = 1000 // Default max concurrent requests
+		}
+		if cfg.Server.LoadShedding.MaxConnectionsPerIP == 0 {
+			cfg.Server.LoadShedding.MaxConnectionsPerIP = 100 // Default per-IP connection limit
 		}
 	}
 }

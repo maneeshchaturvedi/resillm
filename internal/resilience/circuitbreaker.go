@@ -31,7 +31,8 @@ func (s State) String() string {
 }
 
 // Default limit for requests in half-open state
-const defaultHalfOpenMaxRequests = 3
+// Set to 50 to allow sufficient traffic for reliable recovery detection under high concurrency
+const defaultHalfOpenMaxRequests = 50
 
 // CircuitBreaker implements the circuit breaker pattern
 type CircuitBreaker struct {
