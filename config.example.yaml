@@ -42,14 +42,14 @@ providers:
 # Model routing configuration
 # Define how model requests are routed with fallbacks
 models:
-  # GPT-4o with OpenAI fallback
+  # GPT-4o with Anthropic fallback
   gpt-4o:
     primary:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: openai
+      model: gpt-4o
     fallbacks:
-      - provider: openai
-        model: gpt-4o
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
 
   # GPT-4o-mini with OpenAI fallback
   gpt-4o-mini:
@@ -90,11 +90,11 @@ models:
   # Default fallback for unknown models
   default:
     primary:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
+      provider: openai
+      model: gpt-4o
     fallbacks:
-      - provider: openai
-        model: gpt-4o
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
 
 # Resilience settings
 resilience:
