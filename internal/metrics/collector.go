@@ -8,7 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/resillm/resillm/internal/config"
-	"github.com/resillm/resillm/internal/types"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // Collector collects and exposes metrics
@@ -206,7 +206,7 @@ func (c *Collector) Handler() http.Handler {
 }
 
 // RecordSuccess records a successful request
-func (c *Collector) RecordSuccess(provider, model string, usage types.Usage, cost float64) {
+func (c *Collector) RecordSuccess(provider, model string, usage openai.Usage, cost float64) {
 	c.requestsTotal.WithLabelValues(provider, model, "success").Inc()
 	c.tokensTotal.WithLabelValues(provider, model, "input").Add(float64(usage.PromptTokens))
 	c.tokensTotal.WithLabelValues(provider, model, "output").Add(float64(usage.CompletionTokens))

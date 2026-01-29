@@ -11,6 +11,7 @@ import (
 	"github.com/resillm/resillm/internal/resilience"
 	"github.com/resillm/resillm/internal/types"
 	"github.com/rs/zerolog/log"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // ProviderRegistry is the interface for provider lookups
@@ -26,7 +27,7 @@ type Router struct {
 	circuitBreakers map[string]*resilience.CircuitBreaker
 	retryConfig     config.RetryConfig
 	metrics         *metrics.Collector
-	semaphores      *providers.ProviderSemaphores // Limits concurrent requests per provider
+	semaphores      *providers.ProviderSemaphores
 
 	mu sync.RWMutex
 }
@@ -51,14 +52,13 @@ func New(
 }
 
 // ExecuteChat routes a chat completion request with fallback handling
-func (r *Router) ExecuteChat(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, *types.ExecutionMeta, error) {
+func (r *Router) ExecuteChat(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, *types.ExecutionMeta, error) {
 	// Look up model config
 	modelConfig, ok := r.models[req.Model]
 	if !ok {
-		// Try default if available
 		modelConfig, ok = r.models["default"]
 		if !ok {
-			return nil, nil, fmt.Errorf("unknown model: %s", req.Model)
+			return openai.ChatCompletionResponse{}, nil, fmt.Errorf("unknown model: %s", req.Model)
 		}
 	}
 
@@ -114,7 +114,11 @@ func (r *Router) ExecuteChat(ctx context.Context, req *types.ChatCompletionReque
 		meta.Retries += attempts - 1 // Don't count first attempt as retry
 
 		if err == nil {
-			resp := result.(*types.ChatCompletionResponse)
+			resp, ok := result.(openai.ChatCompletionResponse)
+			if !ok {
+				log.Error().Str("provider", endpoint.Provider).Msg("unexpected response type from provider")
+				continue
+			}
 
 			// Record success
 			if cb != nil {
@@ -151,11 +155,18 @@ func (r *Router) ExecuteChat(ctx context.Context, req *types.ChatCompletionReque
 			Msg("Provider failed, trying fallback")
 	}
 
-	return nil, meta, fmt.Errorf("all providers failed: %w", lastErr)
+	return openai.ChatCompletionResponse{}, meta, fmt.Errorf("all providers failed: %w", lastErr)
+}
+
+// StreamResult wraps a stream with its semaphore for cleanup
+type StreamResult struct {
+	Stream   providers.ChatStream
+	Sem      *providers.Semaphore
+	Provider string
 }
 
 // ExecuteChatStream routes a streaming chat completion request
-func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletionRequest) (<-chan types.StreamChunk, *types.ExecutionMeta, error) {
+func (r *Router) ExecuteChatStream(ctx context.Context, req openai.ChatCompletionRequest) (*StreamResult, *types.ExecutionMeta, error) {
 	// Look up model config
 	modelConfig, ok := r.models[req.Model]
 	if !ok {
@@ -189,7 +200,7 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 			continue
 		}
 
-		// Acquire semaphore to limit concurrent requests to this provider
+		// Acquire semaphore
 		sem := r.semaphores.Get(endpoint.Provider)
 		if err := sem.Acquire(ctx); err != nil {
 			log.Debug().
@@ -199,10 +210,9 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 		}
 
 		// For streaming, we don't retry at the request level
-		// (would need to buffer, which defeats the purpose)
-		streamChan, err := provider.ExecuteChatStream(ctx, req, endpoint.Model)
+		stream, err := provider.ExecuteChatStream(ctx, req, endpoint.Model)
 		if err != nil {
-			sem.Release() // Release on error
+			sem.Release()
 			lastErr = err
 			if cb != nil {
 				cb.RecordFailure()
@@ -210,7 +220,7 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 			continue
 		}
 
-		// Success - wrap channel to release semaphore when stream completes
+		// Success
 		if cb != nil {
 			cb.RecordSuccess()
 		}
@@ -219,17 +229,12 @@ func (r *Router) ExecuteChatStream(ctx context.Context, req *types.ChatCompletio
 		meta.ActualModel = endpoint.Model
 		meta.Fallback = i > 0
 
-		// Wrap the channel to release semaphore when stream completes
-		wrappedChan := make(chan types.StreamChunk, cap(streamChan))
-		go func() {
-			defer close(wrappedChan)
-			defer sem.Release()
-			for chunk := range streamChan {
-				wrappedChan <- chunk
-			}
-		}()
-
-		return wrappedChan, meta, nil
+		// Return stream with semaphore - caller must release semaphore when done
+		return &StreamResult{
+			Stream:   stream,
+			Sem:      sem,
+			Provider: endpoint.Provider,
+		}, meta, nil
 	}
 
 	return nil, meta, fmt.Errorf("all providers failed: %w", lastErr)
@@ -256,7 +261,6 @@ func (r *Router) GetProviderStatus() []ProviderStatus {
 			}
 		}
 
-		// Get latency from metrics if available
 		if r.metrics != nil {
 			status.LatencyP99 = r.metrics.GetLatencyP99(name)
 		}

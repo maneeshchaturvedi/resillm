@@ -3,6 +3,8 @@ package providers
 import (
 	"context"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
 // DefaultMaxConcurrentPerProvider is the default maximum concurrent requests per provider.
@@ -58,6 +60,7 @@ func (s *Semaphore) TryAcquire() bool {
 }
 
 // Release releases a slot back to the semaphore.
+// Safe to call multiple times - subsequent calls after first release are no-ops.
 func (s *Semaphore) Release() {
 	select {
 	case <-s.ch:
@@ -65,8 +68,9 @@ func (s *Semaphore) Release() {
 		s.active--
 		s.mu.Unlock()
 	default:
-		// Should not happen - means Release was called without Acquire
-		panic("semaphore: release without acquire")
+		// This can happen if Release is called multiple times or without Acquire.
+		// Log warning instead of panicking to avoid crashing the server.
+		log.Warn().Str("semaphore", s.name).Msg("semaphore: release called without acquire (possible double-release)")
 	}
 }
 

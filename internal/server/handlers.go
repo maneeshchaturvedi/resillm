@@ -14,11 +14,12 @@ import (
 
 	"github.com/resillm/resillm/internal/types"
 	"github.com/rs/zerolog/log"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // Request validation limits
 const (
-	MaxMessageSize = 32 * 1024      // 32KB per message
+	MaxMessageSize = 32 * 1024       // 32KB per message
 	MaxMessages    = 100
 	MaxTokensLimit = 100000
 	MaxBodySize    = 5 * 1024 * 1024 // 5MB hard limit for request body
@@ -40,7 +41,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Parse request
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		// Check if error is due to body size exceeded
 		if err.Error() == "http: request body too large" {
 			s.writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
 				fmt.Sprintf("Request body exceeds maximum size of %d bytes", MaxBodySize))
@@ -51,7 +51,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var req types.ChatCompletionRequest
+	var req openai.ChatCompletionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON: "+err.Error())
 		return
@@ -82,7 +82,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Check budget before proceeding
 	if s.budget != nil {
-		budgetCheck := s.budget.Check(0) // Check with zero estimated cost for now
+		budgetCheck := s.budget.Check(0)
 		if !budgetCheck.Allowed {
 			s.writeError(w, http.StatusTooManyRequests, "budget_exceeded", budgetCheck.Message)
 			return
@@ -100,13 +100,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Check if streaming
 	if req.Stream {
-		s.handleStreamingChat(w, r, &req, requestID)
+		s.handleStreamingChat(w, r, req, requestID)
 		return
 	}
 
 	// Execute via router
 	start := time.Now()
-	resp, meta, err := s.router.ExecuteChat(ctx, &req)
+	resp, meta, err := s.router.ExecuteChat(ctx, req)
 	latency := time.Since(start)
 
 	if err != nil {
@@ -120,19 +120,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.budget.Record(meta.Cost)
 	}
 
-	// Add resillm metadata to response
-	resp.ResillmMeta = &types.ResillmMeta{
-		Provider:       meta.Provider,
-		ActualModel:    meta.ActualModel,
-		RequestedModel: req.Model,
-		LatencyMs:      latency.Milliseconds(),
-		Retries:        meta.Retries,
-		Fallback:       meta.Fallback,
-		CostUSD:        meta.Cost,
-		RequestID:      requestID,
-	}
-
-	// Audit logging - log model, provider, cost, tokens per request
+	// Audit logging
 	log.Info().
 		Str("request_id", requestID).
 		Str("model", req.Model).
@@ -147,11 +135,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Int64("latency_ms", latency.Milliseconds()).
 		Msg("Chat completion succeeded")
 
-	// Set response headers
+	// Set response headers with metadata
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("X-Resillm-Provider", meta.Provider)
+	w.Header().Set("X-Resillm-Model", meta.ActualModel)
 	w.Header().Set("X-Resillm-Latency-Ms", formatInt(latency.Milliseconds()))
+	w.Header().Set("X-Resillm-Cost", fmt.Sprintf("%.6f", meta.Cost))
+	w.Header().Set("X-Resillm-Retries", strconv.Itoa(meta.Retries))
+	w.Header().Set("X-Resillm-Fallback", strconv.FormatBool(meta.Fallback))
 
 	// Debug log the response
 	if s.cfg.Logging.LogResponses {
@@ -162,13 +154,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			Msg("Chat completion response")
 	}
 
+	// Write response directly - no wrapper needed
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Error().Err(err).Msg("Failed to encode response")
 	}
 }
 
 // handleStreamingChat handles streaming chat completions
-func (s *Server) handleStreamingChat(w http.ResponseWriter, r *http.Request, req *types.ChatCompletionRequest, requestID string) {
+func (s *Server) handleStreamingChat(w http.ResponseWriter, r *http.Request, req openai.ChatCompletionRequest, requestID string) {
 	ctx := r.Context()
 
 	log.Debug().
@@ -189,73 +182,98 @@ func (s *Server) handleStreamingChat(w http.ResponseWriter, r *http.Request, req
 	}
 
 	// Execute streaming via router
-	streamChan, meta, err := s.router.ExecuteChatStream(ctx, req)
+	streamResult, meta, err := s.router.ExecuteChatStream(ctx, req)
 	if err != nil {
-		// Write error as SSE
 		writeSSEError(w, flusher, err.Error())
+		writeSSEDone(w, flusher)
 		return
 	}
 
+	// Defensive nil check - should never happen but prevents panic
+	if streamResult == nil || streamResult.Stream == nil {
+		log.Error().Str("request_id", requestID).Msg("Stream result is nil")
+		writeSSEError(w, flusher, "internal error: stream initialization failed")
+		writeSSEDone(w, flusher)
+		return
+	}
+
+	// Ensure cleanup when done - safe to call multiple times
+	defer func() {
+		if streamResult.Stream != nil {
+			streamResult.Stream.Close()
+		}
+		if streamResult.Sem != nil {
+			streamResult.Sem.Release()
+		}
+	}()
+
 	// Set provider header after we know which one was used
 	w.Header().Set("X-Resillm-Provider", meta.Provider)
+	w.Header().Set("X-Resillm-Model", meta.ActualModel)
+	w.Header().Set("X-Resillm-Fallback", strconv.FormatBool(meta.Fallback))
 
-	// Stream chunks to client with context cancellation support
+	// Stream chunks to client
+	// Use a done channel to coordinate context cancellation with blocking Recv()
 	for {
+		// Check context before blocking on Recv
 		select {
 		case <-ctx.Done():
-			// Client disconnected or timeout
+			// Client disconnected or timeout - still send [DONE]
+			log.Debug().Str("request_id", requestID).Msg("Client disconnected")
+			writeSSEDone(w, flusher)
 			return
-		case chunk, ok := <-streamChan:
-			if !ok {
-				// Stream complete
-				log.Debug().
-					Str("request_id", requestID).
-					Msg("Streaming completed")
-				w.Write([]byte("data: [DONE]\n\n"))
-				flusher.Flush()
-				return
-			}
-
-			if chunk.Error != nil {
-				log.Error().
-					Str("request_id", requestID).
-					Err(chunk.Error).
-					Msg("Streaming error")
-				writeSSEError(w, flusher, sanitizeError(chunk.Error))
-				return
-			}
-
-			data, err := json.Marshal(chunk.Data)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to marshal stream chunk")
-				continue
-			}
-
-			// Debug log each chunk if response logging is enabled
-			if s.cfg.Logging.LogResponses {
-				log.Debug().
-					Str("request_id", requestID).
-					RawJSON("chunk", data).
-					Msg("Streaming chunk")
-			}
-
-			w.Write([]byte("data: "))
-			w.Write(data)
-			w.Write([]byte("\n\n"))
-			flusher.Flush()
+		default:
 		}
+
+		// Recv() blocks until a chunk is available or stream ends
+		chunk, err := streamResult.Stream.Recv()
+		if errors.Is(err, io.EOF) {
+			log.Debug().
+				Str("request_id", requestID).
+				Msg("Streaming completed")
+			writeSSEDone(w, flusher)
+			return
+		}
+		if err != nil {
+			log.Error().
+				Str("request_id", requestID).
+				Err(err).
+				Msg("Streaming error")
+			writeSSEError(w, flusher, sanitizeError(err))
+			writeSSEDone(w, flusher)
+			return
+		}
+
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			log.Error().Err(err).Str("request_id", requestID).Msg("Failed to marshal stream chunk - terminating stream")
+			writeSSEError(w, flusher, "internal error: failed to encode response")
+			writeSSEDone(w, flusher)
+			return
+		}
+
+		// Debug log each chunk if response logging is enabled
+		if s.cfg.Logging.LogResponses {
+			log.Debug().
+				Str("request_id", requestID).
+				RawJSON("chunk", data).
+				Msg("Streaming chunk")
+		}
+
+		w.Write([]byte("data: "))
+		w.Write(data)
+		w.Write([]byte("\n\n"))
+		flusher.Flush()
 	}
 }
 
 // handleCompletions handles POST /v1/completions (legacy)
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
-	// For now, return not implemented
 	s.writeError(w, http.StatusNotImplemented, "not_implemented", "Legacy completions API not yet supported")
 }
 
 // handleEmbeddings handles POST /v1/embeddings
 func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
-	// For now, return not implemented
 	s.writeError(w, http.StatusNotImplemented, "not_implemented", "Embeddings API not yet supported")
 }
 
@@ -264,7 +282,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "healthy"
 	httpStatus := http.StatusOK
 
-	// Check if any provider is available (circuit not open)
 	providers := s.router.GetProviderStatus()
 	allCircuitsOpen := true
 	for _, p := range providers {
@@ -324,7 +341,7 @@ func (s *Server) handleBudget(w http.ResponseWriter, r *http.Request) {
 				"remaining": status.DailyRemaining,
 				"percent":   status.DailyPercent,
 			},
-			"alert_triggered":   status.AlertTriggered,
+			"alert_triggered":    status.AlertTriggered,
 			"action_on_exceeded": s.cfg.Budget.ActionOnExceeded,
 		}
 	} else {
@@ -398,23 +415,25 @@ func writeSSEError(w http.ResponseWriter, flusher http.Flusher, message string) 
 	flusher.Flush()
 }
 
-// generateRequestID creates a cryptographically secure request ID
+func writeSSEDone(w http.ResponseWriter, flusher http.Flusher) {
+	w.Write([]byte("data: [DONE]\n\n"))
+	flusher.Flush()
+}
+
 func generateRequestID() string {
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp if crypto/rand fails (extremely rare)
 		return fmt.Sprintf("req-%d", time.Now().UnixNano())
 	}
 	return "req-" + hex.EncodeToString(b)
 }
 
-// formatInt converts int64 to string representation
 func formatInt(i int64) string {
 	return strconv.FormatInt(i, 10)
 }
 
-// validateRequest performs comprehensive input validation
-func validateRequest(req *types.ChatCompletionRequest) error {
+// validateRequest performs input validation on the request
+func validateRequest(req *openai.ChatCompletionRequest) error {
 	if req.Model == "" {
 		return errors.New("model is required")
 	}
@@ -424,22 +443,16 @@ func validateRequest(req *types.ChatCompletionRequest) error {
 	if len(req.Messages) > MaxMessages {
 		return fmt.Errorf("too many messages: %d (max %d)", len(req.Messages), MaxMessages)
 	}
-	if req.MaxTokens != nil && *req.MaxTokens > MaxTokensLimit {
-		return fmt.Errorf("max_tokens too large: %d (max %d)", *req.MaxTokens, MaxTokensLimit)
+	if req.MaxTokens > MaxTokensLimit {
+		return fmt.Errorf("max_tokens too large: %d (max %d)", req.MaxTokens, MaxTokensLimit)
 	}
-	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 2) {
+	if req.Temperature < 0 || req.Temperature > 2 {
 		return errors.New("temperature must be between 0 and 2")
 	}
-	if req.TopP != nil && (*req.TopP < 0 || *req.TopP > 1) {
+	if req.TopP < 0 || req.TopP > 1 {
 		return errors.New("top_p must be between 0 and 1")
 	}
 	for i, msg := range req.Messages {
-		// Check content size - handle both string and other types
-		if contentStr, ok := msg.Content.(string); ok {
-			if len(contentStr) > MaxMessageSize {
-				return fmt.Errorf("message %d too large: %d bytes (max %d)", i, len(contentStr), MaxMessageSize)
-			}
-		}
 		// Validate role
 		switch msg.Role {
 		case "system", "user", "assistant", "tool":
@@ -451,15 +464,12 @@ func validateRequest(req *types.ChatCompletionRequest) error {
 	return nil
 }
 
-// sanitizeError removes sensitive information (API keys) from error messages
 func sanitizeError(err error) string {
 	if err == nil {
 		return ""
 	}
 	msg := err.Error()
-	// Remove OpenAI API key patterns
 	msg = openaiKeyPattern.ReplaceAllString(msg, "[REDACTED]")
-	// Remove Anthropic API key patterns
 	msg = anthropicKeyPattern.ReplaceAllString(msg, "[REDACTED]")
 	return msg
 }

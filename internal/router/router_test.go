@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -9,29 +10,66 @@ import (
 	"github.com/resillm/resillm/internal/config"
 	"github.com/resillm/resillm/internal/providers"
 	"github.com/resillm/resillm/internal/resilience"
-	"github.com/resillm/resillm/internal/types"
+	openai "github.com/sashabaranov/go-openai"
 )
+
+// MockChatStream implements providers.ChatStream for testing
+type MockChatStream struct {
+	chunks []openai.ChatCompletionStreamResponse
+	index  int
+	err    error
+	mu     sync.Mutex
+}
+
+func NewMockChatStream(chunks []openai.ChatCompletionStreamResponse) *MockChatStream {
+	return &MockChatStream{chunks: chunks}
+}
+
+func (m *MockChatStream) Recv() (openai.ChatCompletionStreamResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.err != nil {
+		return openai.ChatCompletionStreamResponse{}, m.err
+	}
+	if m.index >= len(m.chunks) {
+		return openai.ChatCompletionStreamResponse{}, io.EOF
+	}
+	chunk := m.chunks[m.index]
+	m.index++
+	return chunk, nil
+}
+
+func (m *MockChatStream) Close() {
+	// No-op for mock
+}
+
+func (m *MockChatStream) SetError(err error) {
+	m.mu.Lock()
+	m.err = err
+	m.mu.Unlock()
+}
 
 // MockProvider for testing
 type MockProvider struct {
-	name       string
-	response   *types.ChatCompletionResponse
-	err        error
-	callCount  int
-	mu         sync.Mutex
-	latency    time.Duration
-	failUntil  int // Fail until this many calls
+	name      string
+	response  openai.ChatCompletionResponse
+	err       error
+	callCount int
+	mu        sync.Mutex
+	latency   time.Duration
+	failUntil int // Fail until this many calls
 }
 
 func NewMockProvider(name string) *MockProvider {
 	return &MockProvider{
 		name: name,
-		response: &types.ChatCompletionResponse{
+		response: openai.ChatCompletionResponse{
 			ID:      "test-id",
 			Object:  "chat.completion",
 			Model:   "test-model",
-			Choices: []types.Choice{{Message: types.Message{Content: "test response"}}},
-			Usage:   types.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+			Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Content: "test response"}}},
+			Usage:   openai.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
 		},
 	}
 }
@@ -40,7 +78,7 @@ func (m *MockProvider) Name() string {
 	return m.name
 }
 
-func (m *MockProvider) ExecuteChat(ctx context.Context, req *types.ChatCompletionRequest, model string) (*types.ChatCompletionResponse, error) {
+func (m *MockProvider) ExecuteChat(ctx context.Context, req openai.ChatCompletionRequest, model string) (openai.ChatCompletionResponse, error) {
 	m.mu.Lock()
 	m.callCount++
 	count := m.callCount
@@ -50,31 +88,35 @@ func (m *MockProvider) ExecuteChat(ctx context.Context, req *types.ChatCompletio
 		select {
 		case <-time.After(m.latency):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return openai.ChatCompletionResponse{}, ctx.Err()
 		}
 	}
 
 	if m.failUntil > 0 && count <= m.failUntil {
-		return nil, m.err
+		return openai.ChatCompletionResponse{}, m.err
 	}
 
 	if m.err != nil && m.failUntil == 0 {
-		return nil, m.err
+		return openai.ChatCompletionResponse{}, m.err
 	}
 
 	return m.response, nil
 }
 
-func (m *MockProvider) ExecuteChatStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (<-chan types.StreamChunk, error) {
+func (m *MockProvider) ExecuteChatStream(ctx context.Context, req openai.ChatCompletionRequest, model string) (providers.ChatStream, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	ch := make(chan types.StreamChunk)
-	close(ch)
-	return ch, nil
+	// Return a mock stream with sample chunks
+	chunks := []openai.ChatCompletionStreamResponse{
+		{ID: "test-stream", Choices: []openai.ChatCompletionStreamChoice{{Delta: openai.ChatCompletionStreamChoiceDelta{Role: "assistant"}}}},
+		{ID: "test-stream", Choices: []openai.ChatCompletionStreamChoice{{Delta: openai.ChatCompletionStreamChoiceDelta{Content: "Hello"}}}},
+		{ID: "test-stream", Choices: []openai.ChatCompletionStreamChoice{{Delta: openai.ChatCompletionStreamChoiceDelta{Content: " world"}}}},
+	}
+	return NewMockChatStream(chunks), nil
 }
 
-func (m *MockProvider) CalculateCost(model string, usage types.Usage) float64 {
+func (m *MockProvider) CalculateCost(model string, usage openai.Usage) float64 {
 	return 0.001
 }
 
@@ -154,28 +196,6 @@ func (r *MockRegistry) List() []string {
 	return names
 }
 
-// Test helpers
-func createTestRouter(registry *MockRegistry, models map[string]config.ModelConfig) *Router {
-	circuitBreakers := make(map[string]*resilience.CircuitBreaker)
-	for name := range registry.providers {
-		circuitBreakers[name] = resilience.NewCircuitBreaker(name, config.CircuitBreakerConfig{
-			FailureThreshold: 3,
-			SuccessThreshold: 2,
-			Timeout:          100 * time.Millisecond,
-		}, nil)
-	}
-
-	retryConfig := config.RetryConfig{
-		MaxAttempts:       3,
-		InitialBackoff:    1 * time.Millisecond,
-		MaxBackoff:        10 * time.Millisecond,
-		BackoffMultiplier: 2.0,
-		RetryableErrors:   []int{429, 500, 502, 503, 504},
-	}
-
-	return New(models, (*providers.Registry)(nil), circuitBreakers, retryConfig, nil, 200)
-}
-
 // Tests
 
 func TestRouter_RoutesToPrimaryProvider(t *testing.T) {
@@ -195,9 +215,9 @@ func TestRouter_RoutesToPrimaryProvider(t *testing.T) {
 
 	router := createTestRouterWithRegistry(registry, models)
 
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "gpt-4o",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
 	resp, meta, err := router.ExecuteChat(context.Background(), req)
@@ -206,7 +226,7 @@ func TestRouter_RoutesToPrimaryProvider(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if resp == nil {
+	if resp.ID == "" {
 		t.Fatal("expected response")
 	}
 
@@ -246,9 +266,9 @@ func TestRouter_FallsBackOnPrimaryFailure(t *testing.T) {
 
 	router := createTestRouterWithRegistry(registry, models)
 
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "gpt-4o",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
 	resp, meta, err := router.ExecuteChat(context.Background(), req)
@@ -257,7 +277,7 @@ func TestRouter_FallsBackOnPrimaryFailure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if resp == nil {
+	if resp.ID == "" {
 		t.Fatal("expected response")
 	}
 
@@ -290,19 +310,15 @@ func TestRouter_ReturnsErrorWhenAllProvidersFail(t *testing.T) {
 
 	router := createTestRouterWithRegistry(registry, models)
 
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "gpt-4o",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
-	resp, _, err := router.ExecuteChat(context.Background(), req)
+	_, _, err := router.ExecuteChat(context.Background(), req)
 
 	if err == nil {
 		t.Fatal("expected error when all providers fail")
-	}
-
-	if resp != nil {
-		t.Error("expected nil response when all providers fail")
 	}
 }
 
@@ -321,7 +337,7 @@ func TestRouter_SkipsProviderWithOpenCircuit(t *testing.T) {
 		},
 	}
 
-	// Create circuit breaker that's already open
+	// Create circuit breaker that's already open for primary
 	circuitBreakers := make(map[string]*resilience.CircuitBreaker)
 
 	openaiCB := resilience.NewCircuitBreaker("openai", config.CircuitBreakerConfig{
@@ -339,42 +355,57 @@ func TestRouter_SkipsProviderWithOpenCircuit(t *testing.T) {
 		Timeout:          100 * time.Millisecond,
 	}, nil)
 
+	// Create router with custom circuit breakers
 	retryConfig := config.RetryConfig{
-		MaxAttempts:       1,
+		MaxAttempts:       3,
 		InitialBackoff:    1 * time.Millisecond,
 		MaxBackoff:        10 * time.Millisecond,
 		BackoffMultiplier: 2.0,
-		RetryableErrors:   []int{429, 500},
+		RetryableErrors:   []int{429, 500, 502, 503, 504},
 	}
 
-	router := &Router{
+	r := &Router{
 		models:          models,
-		providers:       nil,
 		circuitBreakers: circuitBreakers,
 		retryConfig:     retryConfig,
 		metrics:         nil,
+		semaphores:      providers.NewProviderSemaphores(200),
+		providers:       &mockRegistryWrapper{registry: registry},
 	}
 
-	// Override provider lookup
-	router.providers = nil // Will use fallback method
-
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "gpt-4o",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
-	// This test verifies the circuit breaker logic
-	// Primary should be skipped due to open circuit
-	if openaiCB.Allow() {
-		t.Error("expected openai circuit to reject requests")
+	resp, meta, err := r.ExecuteChat(context.Background(), req)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !circuitBreakers["anthropic"].Allow() {
-		t.Error("expected anthropic circuit to allow requests")
+	if resp.ID == "" {
+		t.Fatal("expected response")
 	}
 
-	// Direct test of Allow() behavior
-	_ = req // Used in full integration
+	// Primary should be skipped due to open circuit, fallback should be used
+	if meta.Provider != "anthropic" {
+		t.Errorf("expected provider 'anthropic' (fallback), got '%s'", meta.Provider)
+	}
+
+	if !meta.Fallback {
+		t.Error("expected fallback=true since primary was skipped")
+	}
+
+	// Primary should NOT have been called
+	if primary.GetCallCount() != 0 {
+		t.Errorf("expected primary to not be called (circuit open), got %d calls", primary.GetCallCount())
+	}
+
+	// Fallback should have been called
+	if fallback.GetCallCount() != 1 {
+		t.Errorf("expected fallback to be called once, got %d", fallback.GetCallCount())
+	}
 }
 
 func TestRouter_UnknownModelReturnsError(t *testing.T) {
@@ -389,9 +420,9 @@ func TestRouter_UnknownModelReturnsError(t *testing.T) {
 
 	router := createTestRouterWithRegistry(registry, models)
 
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "unknown-model",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
 	_, _, err := router.ExecuteChat(context.Background(), req)
@@ -422,9 +453,9 @@ func TestRouter_UsesDefaultModelForUnknown(t *testing.T) {
 
 	router := createTestRouterWithRegistry(registry, models)
 
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "unknown-model",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
 	resp, meta, err := router.ExecuteChat(context.Background(), req)
@@ -433,7 +464,7 @@ func TestRouter_UsesDefaultModelForUnknown(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if resp == nil {
+	if resp.ID == "" {
 		t.Fatal("expected response")
 	}
 
@@ -458,9 +489,9 @@ func TestRouter_TracksRetryCount(t *testing.T) {
 
 	router := createTestRouterWithRegistry(registry, models)
 
-	req := &types.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:    "gpt-4o",
-		Messages: []types.Message{{Role: "user", Content: "test"}},
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
 	}
 
 	resp, meta, err := router.ExecuteChat(context.Background(), req)
@@ -469,7 +500,7 @@ func TestRouter_TracksRetryCount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if resp == nil {
+	if resp.ID == "" {
 		t.Fatal("expected response")
 	}
 
@@ -501,6 +532,145 @@ func TestRouter_GetProviderStatus(t *testing.T) {
 		if status.Circuit != "closed" {
 			t.Errorf("expected circuit 'closed', got '%s'", status.Circuit)
 		}
+	}
+}
+
+func TestRouter_ExecuteChatStream_Success(t *testing.T) {
+	primary := NewMockProvider("openai")
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary: config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	req := openai.ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+	}
+
+	result, meta, err := router.ExecuteChatStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected stream result")
+	}
+
+	if result.Stream == nil {
+		t.Fatal("expected stream")
+	}
+
+	if meta.Provider != "openai" {
+		t.Errorf("expected provider 'openai', got '%s'", meta.Provider)
+	}
+
+	if meta.Fallback {
+		t.Error("expected fallback=false")
+	}
+
+	// Read chunks from the stream
+	var chunks []openai.ChatCompletionStreamResponse
+	for {
+		chunk, err := result.Stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	if len(chunks) != 3 {
+		t.Errorf("expected 3 chunks, got %d", len(chunks))
+	}
+
+	// Cleanup
+	result.Stream.Close()
+	result.Sem.Release()
+}
+
+func TestRouter_ExecuteChatStream_Fallback(t *testing.T) {
+	primary := NewMockProvider("openai")
+	primary.SetError(&MockProviderError{Code: 500, Msg: "server error"})
+
+	fallback := NewMockProvider("anthropic")
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+	registry.Add("anthropic", fallback)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary:   config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+			Fallbacks: []config.EndpointConfig{{Provider: "anthropic", Model: "claude-3"}},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	req := openai.ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+	}
+
+	result, meta, err := router.ExecuteChatStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected stream result")
+	}
+
+	if meta.Provider != "anthropic" {
+		t.Errorf("expected provider 'anthropic', got '%s'", meta.Provider)
+	}
+
+	if !meta.Fallback {
+		t.Error("expected fallback=true")
+	}
+
+	// Cleanup
+	result.Stream.Close()
+	result.Sem.Release()
+}
+
+func TestRouter_ExecuteChatStream_AllProvidersFail(t *testing.T) {
+	primary := NewMockProvider("openai")
+	primary.SetError(&MockProviderError{Code: 500, Msg: "server error"})
+
+	fallback := NewMockProvider("anthropic")
+	fallback.SetError(&MockProviderError{Code: 500, Msg: "server error"})
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+	registry.Add("anthropic", fallback)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary:   config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+			Fallbacks: []config.EndpointConfig{{Provider: "anthropic", Model: "claude-3"}},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	req := openai.ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+	}
+
+	_, _, err := router.ExecuteChatStream(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error when all providers fail")
 	}
 }
 
@@ -561,4 +731,366 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// Integration and concurrent request tests
+
+func TestRouter_ConcurrentRequests(t *testing.T) {
+	primary := NewMockProvider("openai")
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary: config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	// Launch multiple concurrent requests
+	numRequests := 50
+	var wg sync.WaitGroup
+	errors := make(chan error, numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			req := openai.ChatCompletionRequest{
+				Model:    "gpt-4o",
+				Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+			}
+
+			_, _, err := router.ExecuteChat(context.Background(), req)
+			if err != nil {
+				errors <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check for errors
+	for err := range errors {
+		t.Errorf("concurrent request failed: %v", err)
+	}
+
+	// All requests should have been processed
+	if primary.GetCallCount() != numRequests {
+		t.Errorf("expected %d calls, got %d", numRequests, primary.GetCallCount())
+	}
+}
+
+func TestRouter_ConcurrentRequestsWithFallback(t *testing.T) {
+	primary := NewMockProvider("openai")
+	// Make primary fail intermittently
+	primary.SetError(&MockProviderError{Code: 500, Msg: "server error"})
+	primary.SetFailUntil(25) // First 25 attempts will fail
+
+	fallback := NewMockProvider("anthropic")
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+	registry.Add("anthropic", fallback)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary:   config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+			Fallbacks: []config.EndpointConfig{{Provider: "anthropic", Model: "claude-3"}},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	numRequests := 30
+	var wg sync.WaitGroup
+	successCount := 0
+	var mu sync.Mutex
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			req := openai.ChatCompletionRequest{
+				Model:    "gpt-4o",
+				Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+			}
+
+			_, _, err := router.ExecuteChat(context.Background(), req)
+			if err == nil {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// All requests should eventually succeed (via primary retry or fallback)
+	if successCount != numRequests {
+		t.Errorf("expected %d successes, got %d", numRequests, successCount)
+	}
+}
+
+func TestRouter_SemaphoreLimiting(t *testing.T) {
+	slowProvider := NewMockProvider("openai")
+	slowProvider.latency = 50 * time.Millisecond
+
+	registry := NewMockRegistry()
+	registry.Add("openai", slowProvider)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary: config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+		},
+	}
+
+	// Create router with very low semaphore limit
+	maxConcurrent := 3
+	circuitBreakers := make(map[string]*resilience.CircuitBreaker)
+	circuitBreakers["openai"] = resilience.NewCircuitBreaker("openai", config.CircuitBreakerConfig{
+		FailureThreshold: 10,
+		SuccessThreshold: 2,
+		Timeout:          100 * time.Millisecond,
+	}, nil)
+
+	retryConfig := config.RetryConfig{
+		MaxAttempts:       1,
+		InitialBackoff:    1 * time.Millisecond,
+		MaxBackoff:        10 * time.Millisecond,
+		BackoffMultiplier: 2.0,
+		RetryableErrors:   []int{429, 500, 502, 503, 504},
+	}
+
+	r := &Router{
+		models:          models,
+		circuitBreakers: circuitBreakers,
+		retryConfig:     retryConfig,
+		metrics:         nil,
+		semaphores:      providers.NewProviderSemaphores(maxConcurrent),
+		providers:       &mockRegistryWrapper{registry: registry},
+	}
+
+	// Launch more concurrent requests than the semaphore allows
+	numRequests := 10
+	var wg sync.WaitGroup
+	startTime := time.Now()
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			req := openai.ChatCompletionRequest{
+				Model:    "gpt-4o",
+				Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+			}
+
+			_, _, _ = r.ExecuteChat(context.Background(), req)
+		}()
+	}
+
+	wg.Wait()
+	elapsed := time.Since(startTime)
+
+	// With 10 requests, 50ms each, and max 3 concurrent,
+	// minimum time is ceil(10/3) * 50ms = 4 * 50ms = 200ms
+	// Allow some slack for scheduling
+	minExpected := 150 * time.Millisecond
+	if elapsed < minExpected {
+		t.Errorf("expected at least %v (semaphore limiting), but took %v", minExpected, elapsed)
+	}
+}
+
+func TestRouter_ContextCancellation(t *testing.T) {
+	slowProvider := NewMockProvider("openai")
+	slowProvider.latency = 500 * time.Millisecond
+
+	registry := NewMockRegistry()
+	registry.Add("openai", slowProvider)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary: config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	req := openai.ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+	}
+
+	start := time.Now()
+	_, _, err := router.ExecuteChat(ctx, req)
+	elapsed := time.Since(start)
+
+	// Should have cancelled quickly
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("expected quick cancellation, but took %v", elapsed)
+	}
+
+	// Should have an error
+	if err == nil {
+		t.Error("expected error from context cancellation")
+	}
+}
+
+func TestRouter_StreamConcurrent(t *testing.T) {
+	primary := NewMockProvider("openai")
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary: config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+		},
+	}
+
+	router := createTestRouterWithRegistry(registry, models)
+
+	// Launch multiple concurrent streaming requests
+	numRequests := 20
+	var wg sync.WaitGroup
+	errors := make(chan error, numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			req := openai.ChatCompletionRequest{
+				Model:    "gpt-4o",
+				Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+			}
+
+			result, _, err := router.ExecuteChatStream(context.Background(), req)
+			if err != nil {
+				errors <- err
+				return
+			}
+
+			// Consume the stream
+			for {
+				_, err := result.Stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					errors <- err
+					break
+				}
+			}
+
+			result.Stream.Close()
+			result.Sem.Release()
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check for errors
+	for err := range errors {
+		t.Errorf("concurrent stream request failed: %v", err)
+	}
+}
+
+func TestRouter_CircuitBreakerOpensAfterFailures(t *testing.T) {
+	primary := NewMockProvider("openai")
+	primary.SetError(&MockProviderError{Code: 500, Msg: "server error"})
+
+	fallback := NewMockProvider("anthropic")
+
+	registry := NewMockRegistry()
+	registry.Add("openai", primary)
+	registry.Add("anthropic", fallback)
+
+	models := map[string]config.ModelConfig{
+		"gpt-4o": {
+			Primary:   config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
+			Fallbacks: []config.EndpointConfig{{Provider: "anthropic", Model: "claude-3"}},
+		},
+	}
+
+	// Create circuit breaker with low threshold
+	circuitBreakers := make(map[string]*resilience.CircuitBreaker)
+	circuitBreakers["openai"] = resilience.NewCircuitBreaker("openai", config.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 2,
+		Timeout:          1 * time.Hour,
+	}, nil)
+	circuitBreakers["anthropic"] = resilience.NewCircuitBreaker("anthropic", config.CircuitBreakerConfig{
+		FailureThreshold: 3,
+		SuccessThreshold: 2,
+		Timeout:          100 * time.Millisecond,
+	}, nil)
+
+	retryConfig := config.RetryConfig{
+		MaxAttempts:       1, // No retries for this test
+		InitialBackoff:    1 * time.Millisecond,
+		MaxBackoff:        10 * time.Millisecond,
+		BackoffMultiplier: 2.0,
+		RetryableErrors:   []int{429, 500, 502, 503, 504},
+	}
+
+	r := &Router{
+		models:          models,
+		circuitBreakers: circuitBreakers,
+		retryConfig:     retryConfig,
+		metrics:         nil,
+		semaphores:      providers.NewProviderSemaphores(200),
+		providers:       &mockRegistryWrapper{registry: registry},
+	}
+
+	req := openai.ChatCompletionRequest{
+		Model:    "gpt-4o",
+		Messages: []openai.ChatCompletionMessage{{Role: "user", Content: "test"}},
+	}
+
+	// First few requests: primary fails, falls back
+	for i := 0; i < 3; i++ {
+		_, meta, err := r.ExecuteChat(context.Background(), req)
+		if err != nil {
+			t.Fatalf("request %d: unexpected error: %v", i, err)
+		}
+		// Fallback should be used
+		if meta.Provider != "anthropic" {
+			t.Errorf("request %d: expected fallback provider, got %s", i, meta.Provider)
+		}
+	}
+
+	// Circuit breaker should now be open
+	if circuitBreakers["openai"].Allow() {
+		t.Error("expected openai circuit to be open after failures")
+	}
+
+	// Reset primary call count
+	primary.Reset()
+
+	// Next request: primary should be skipped entirely
+	_, meta, err := r.ExecuteChat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Provider != "anthropic" {
+		t.Errorf("expected anthropic (circuit open), got %s", meta.Provider)
+	}
+
+	// Primary should NOT have been called (circuit is open)
+	if primary.GetCallCount() != 0 {
+		t.Errorf("expected primary to not be called (circuit open), got %d calls", primary.GetCallCount())
+	}
 }

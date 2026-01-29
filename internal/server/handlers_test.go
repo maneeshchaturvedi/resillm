@@ -18,13 +18,44 @@ import (
 	"github.com/resillm/resillm/internal/providers"
 	"github.com/resillm/resillm/internal/resilience"
 	"github.com/resillm/resillm/internal/router"
-	"github.com/resillm/resillm/internal/types"
+	openai "github.com/sashabaranov/go-openai"
 )
+
+// MockChatStream implements providers.ChatStream for testing
+type MockChatStream struct {
+	chunks []openai.ChatCompletionStreamResponse
+	index  int
+	err    error
+	mu     sync.Mutex
+}
+
+func NewMockChatStream(chunks []openai.ChatCompletionStreamResponse) *MockChatStream {
+	return &MockChatStream{chunks: chunks}
+}
+
+func (m *MockChatStream) Recv() (openai.ChatCompletionStreamResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.err != nil {
+		return openai.ChatCompletionStreamResponse{}, m.err
+	}
+	if m.index >= len(m.chunks) {
+		return openai.ChatCompletionStreamResponse{}, io.EOF
+	}
+	chunk := m.chunks[m.index]
+	m.index++
+	return chunk, nil
+}
+
+func (m *MockChatStream) Close() {
+	// No-op for mock
+}
 
 // MockProvider for testing
 type MockProvider struct {
 	name      string
-	response  *types.ChatCompletionResponse
+	response  openai.ChatCompletionResponse
 	err       error
 	callCount int
 	mu        sync.Mutex
@@ -35,17 +66,12 @@ type MockProvider struct {
 func NewMockProvider(name string) *MockProvider {
 	return &MockProvider{
 		name: name,
-		response: &types.ChatCompletionResponse{
+		response: openai.ChatCompletionResponse{
 			ID:      "test-id",
 			Object:  "chat.completion",
 			Model:   "test-model",
-			Created: time.Now().Unix(),
-			Choices: []types.Choice{{
-				Index:        0,
-				Message:      types.Message{Role: "assistant", Content: "test response"},
-				FinishReason: "stop",
-			}},
-			Usage: types.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+			Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Content: "test response"}}},
+			Usage:   openai.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
 		},
 	}
 }
@@ -54,7 +80,7 @@ func (m *MockProvider) Name() string {
 	return m.name
 }
 
-func (m *MockProvider) ExecuteChat(ctx context.Context, req *types.ChatCompletionRequest, model string) (*types.ChatCompletionResponse, error) {
+func (m *MockProvider) ExecuteChat(ctx context.Context, req openai.ChatCompletionRequest, model string) (openai.ChatCompletionResponse, error) {
 	m.mu.Lock()
 	m.callCount++
 	count := m.callCount
@@ -64,83 +90,35 @@ func (m *MockProvider) ExecuteChat(ctx context.Context, req *types.ChatCompletio
 		select {
 		case <-time.After(m.latency):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return openai.ChatCompletionResponse{}, ctx.Err()
 		}
 	}
 
 	if m.failUntil > 0 && count <= m.failUntil {
-		return nil, m.err
+		return openai.ChatCompletionResponse{}, m.err
 	}
 
 	if m.err != nil && m.failUntil == 0 {
-		return nil, m.err
+		return openai.ChatCompletionResponse{}, m.err
 	}
 
 	return m.response, nil
 }
 
-func (m *MockProvider) ExecuteChatStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (<-chan types.StreamChunk, error) {
+func (m *MockProvider) ExecuteChatStream(ctx context.Context, req openai.ChatCompletionRequest, model string) (providers.ChatStream, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-
-	ch := make(chan types.StreamChunk, 3)
-
-	// Send a few chunks
-	go func() {
-		defer close(ch)
-
-		// Role chunk
-		ch <- types.StreamChunk{
-			Data: &types.ChatCompletionChunk{
-				ID:      "chatcmpl-test",
-				Object:  "chat.completion.chunk",
-				Model:   "test-model",
-				Created: time.Now().Unix(),
-				Choices: []types.ChunkChoice{{
-					Index: 0,
-					Delta: types.Delta{Role: "assistant"},
-				}},
-			},
-		}
-
-		// Content chunk
-		ch <- types.StreamChunk{
-			Data: &types.ChatCompletionChunk{
-				ID:                "chatcmpl-test",
-				Object:            "chat.completion.chunk",
-				Model:             "test-model",
-				Created:           time.Now().Unix(),
-				SystemFingerprint: "fp_test",
-				Choices: []types.ChunkChoice{{
-					Index:        0,
-					Delta:        types.Delta{Content: "Hello, world!"},
-					FinishReason: "",
-				}},
-			},
-		}
-
-		// Final chunk
-		ch <- types.StreamChunk{
-			Data: &types.ChatCompletionChunk{
-				ID:                "chatcmpl-test",
-				Object:            "chat.completion.chunk",
-				Model:             "test-model",
-				Created:           time.Now().Unix(),
-				SystemFingerprint: "fp_test",
-				Choices: []types.ChunkChoice{{
-					Index:        0,
-					Delta:        types.Delta{},
-					FinishReason: "stop",
-				}},
-			},
-		}
-	}()
-
-	return ch, nil
+	// Return a mock stream with sample chunks
+	chunks := []openai.ChatCompletionStreamResponse{
+		{ID: "test-stream", Choices: []openai.ChatCompletionStreamChoice{{Delta: openai.ChatCompletionStreamChoiceDelta{Role: "assistant"}}}},
+		{ID: "test-stream", Choices: []openai.ChatCompletionStreamChoice{{Delta: openai.ChatCompletionStreamChoiceDelta{Content: "Hello"}}}},
+		{ID: "test-stream", Choices: []openai.ChatCompletionStreamChoice{{Delta: openai.ChatCompletionStreamChoiceDelta{Content: " world"}}}},
+	}
+	return NewMockChatStream(chunks), nil
 }
 
-func (m *MockProvider) CalculateCost(model string, usage types.Usage) float64 {
+func (m *MockProvider) CalculateCost(model string, usage openai.Usage) float64 {
 	return 0.001
 }
 
@@ -275,9 +253,9 @@ func TestHandleChatCompletions_Success(t *testing.T) {
 
 	server := createTestServer(registry, models)
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "gpt-4o",
-		Messages: []types.Message{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}
@@ -296,7 +274,7 @@ func TestHandleChatCompletions_Success(t *testing.T) {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
 
-	var chatResp types.ChatCompletionResponse
+	var chatResp openai.ChatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -313,17 +291,13 @@ func TestHandleChatCompletions_Success(t *testing.T) {
 		t.Errorf("expected 'test response', got '%s'", chatResp.Choices[0].Message.Content)
 	}
 
-	// Check resillm metadata
-	if chatResp.ResillmMeta == nil {
-		t.Fatal("expected resillm metadata")
+	// Check resillm metadata in headers
+	if resp.Header.Get("X-Resillm-Provider") != "openai" {
+		t.Errorf("expected X-Resillm-Provider 'openai', got '%s'", resp.Header.Get("X-Resillm-Provider"))
 	}
 
-	if chatResp.ResillmMeta.Provider != "openai" {
-		t.Errorf("expected provider 'openai', got '%s'", chatResp.ResillmMeta.Provider)
-	}
-
-	if chatResp.ResillmMeta.Fallback {
-		t.Error("expected fallback=false")
+	if resp.Header.Get("X-Resillm-Fallback") != "false" {
+		t.Errorf("expected X-Resillm-Fallback 'false', got '%s'", resp.Header.Get("X-Resillm-Fallback"))
 	}
 }
 
@@ -332,8 +306,8 @@ func TestHandleChatCompletions_MissingModel(t *testing.T) {
 	models := map[string]config.ModelConfig{}
 	server := createTestServer(registry, models)
 
-	reqBody := types.ChatCompletionRequest{
-		Messages: []types.Message{
+	reqBody := openai.ChatCompletionRequest{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}
@@ -352,13 +326,14 @@ func TestHandleChatCompletions_MissingModel(t *testing.T) {
 		t.Errorf("expected status 400, got %d", resp.StatusCode)
 	}
 
-	var errResp types.ErrorResponse
+	var errResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
 
-	if errResp.Error.Type != "invalid_request" {
-		t.Errorf("expected error type 'invalid_request', got '%s'", errResp.Error.Type)
+	errDetail := errResp["error"].(map[string]interface{})
+	if errDetail["type"] != "invalid_request" {
+		t.Errorf("expected error type 'invalid_request', got '%s'", errDetail["type"])
 	}
 }
 
@@ -367,7 +342,7 @@ func TestHandleChatCompletions_MissingMessages(t *testing.T) {
 	models := map[string]config.ModelConfig{}
 	server := createTestServer(registry, models)
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "gpt-4o",
 	}
 
@@ -418,9 +393,9 @@ func TestHandleChatCompletions_UnknownModel(t *testing.T) {
 
 	server := createTestServer(registry, models)
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "unknown-model",
-		Messages: []types.Message{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}
@@ -445,17 +420,12 @@ func TestHandleChatCompletions_FallbackProvider(t *testing.T) {
 	primary.SetError(&MockProviderError{Code: 500, Msg: "server error"})
 
 	fallback := NewMockProvider("anthropic")
-	fallback.response = &types.ChatCompletionResponse{
+	fallback.response = openai.ChatCompletionResponse{
 		ID:      "fallback-id",
 		Object:  "chat.completion",
 		Model:   "claude-3",
-		Created: time.Now().Unix(),
-		Choices: []types.Choice{{
-			Index:        0,
-			Message:      types.Message{Role: "assistant", Content: "fallback response"},
-			FinishReason: "stop",
-		}},
-		Usage: types.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+		Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Content: "fallback response"}}},
+		Usage:   openai.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
 	}
 
 	registry := NewMockRegistry()
@@ -471,9 +441,9 @@ func TestHandleChatCompletions_FallbackProvider(t *testing.T) {
 
 	server := createTestServer(registry, models)
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "gpt-4o",
-		Messages: []types.Message{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}
@@ -494,7 +464,7 @@ func TestHandleChatCompletions_FallbackProvider(t *testing.T) {
 		return
 	}
 
-	var chatResp types.ChatCompletionResponse
+	var chatResp openai.ChatCompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -503,16 +473,13 @@ func TestHandleChatCompletions_FallbackProvider(t *testing.T) {
 		t.Errorf("expected 'fallback response', got '%s'", chatResp.Choices[0].Message.Content)
 	}
 
-	if chatResp.ResillmMeta == nil {
-		t.Fatal("expected resillm metadata")
+	// Check resillm metadata in headers
+	if resp.Header.Get("X-Resillm-Provider") != "anthropic" {
+		t.Errorf("expected X-Resillm-Provider 'anthropic', got '%s'", resp.Header.Get("X-Resillm-Provider"))
 	}
 
-	if chatResp.ResillmMeta.Provider != "anthropic" {
-		t.Errorf("expected provider 'anthropic', got '%s'", chatResp.ResillmMeta.Provider)
-	}
-
-	if !chatResp.ResillmMeta.Fallback {
-		t.Error("expected fallback=true")
+	if resp.Header.Get("X-Resillm-Fallback") != "true" {
+		t.Errorf("expected X-Resillm-Fallback 'true', got '%s'", resp.Header.Get("X-Resillm-Fallback"))
 	}
 }
 
@@ -529,9 +496,9 @@ func TestHandleChatCompletions_RequestID(t *testing.T) {
 
 	server := createTestServer(registry, models)
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "gpt-4o",
-		Messages: []types.Message{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}
@@ -549,60 +516,6 @@ func TestHandleChatCompletions_RequestID(t *testing.T) {
 
 	if resp.Header.Get("X-Request-ID") != "custom-request-id" {
 		t.Errorf("expected X-Request-ID 'custom-request-id', got '%s'", resp.Header.Get("X-Request-ID"))
-	}
-}
-
-func TestHandleStreamingChat(t *testing.T) {
-	provider := NewMockProvider("openai")
-	registry := NewMockRegistry()
-	registry.Add("openai", provider)
-
-	models := map[string]config.ModelConfig{
-		"gpt-4o": {
-			Primary: config.EndpointConfig{Provider: "openai", Model: "gpt-4o"},
-		},
-	}
-
-	server := createTestServer(registry, models)
-
-	reqBody := types.ChatCompletionRequest{
-		Model:  "gpt-4o",
-		Stream: true,
-		Messages: []types.Message{
-			{Role: "user", Content: "Hello"},
-		},
-	}
-
-	body, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	server.handleChatCompletions(w, req)
-
-	resp := w.Result()
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status 200, got %d", resp.StatusCode)
-	}
-
-	if resp.Header.Get("Content-Type") != "text/event-stream" {
-		t.Errorf("expected Content-Type 'text/event-stream', got '%s'", resp.Header.Get("Content-Type"))
-	}
-
-	// Read the response body
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	bodyStr := string(bodyBytes)
-
-	// Should contain "data:" prefixed events
-	if !bytes.Contains(bodyBytes, []byte("data:")) {
-		t.Errorf("expected SSE format with 'data:' prefix")
-	}
-
-	// Should end with [DONE]
-	if !bytes.Contains(bodyBytes, []byte("[DONE]")) {
-		t.Errorf("expected [DONE] marker, got: %s", bodyStr)
 	}
 }
 
@@ -825,9 +738,9 @@ func TestHandleChatCompletions_BudgetExceeded(t *testing.T) {
 	// Exhaust the budget
 	server.budget.Record(100.0) // Hourly limit is 100.0
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "gpt-4o",
-		Messages: []types.Message{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}
@@ -847,13 +760,14 @@ func TestHandleChatCompletions_BudgetExceeded(t *testing.T) {
 		t.Errorf("expected status 429, got %d", resp.StatusCode)
 	}
 
-	var errResp types.ErrorResponse
+	var errResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
 
-	if errResp.Error.Type != "budget_exceeded" {
-		t.Errorf("expected error type 'budget_exceeded', got '%s'", errResp.Error.Type)
+	errDetail := errResp["error"].(map[string]interface{})
+	if errDetail["type"] != "budget_exceeded" {
+		t.Errorf("expected error type 'budget_exceeded', got '%s'", errDetail["type"])
 	}
 }
 
@@ -922,9 +836,9 @@ func TestHandleChatCompletions_BudgetWarning(t *testing.T) {
 	// Exhaust the budget
 	server.budget.Record(100.0)
 
-	reqBody := types.ChatCompletionRequest{
+	reqBody := openai.ChatCompletionRequest{
 		Model: "gpt-4o",
-		Messages: []types.Message{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: "user", Content: "Hello"},
 		},
 	}

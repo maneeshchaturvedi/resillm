@@ -3,10 +3,23 @@ package providers
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/resillm/resillm/internal/config"
-	"github.com/resillm/resillm/internal/types"
+	openai "github.com/sashabaranov/go-openai"
 )
+
+// ChatStream is an interface for streaming chat completion responses.
+// This abstracts away the concrete *openai.ChatCompletionStream type,
+// enabling testing with mocks and supporting alternative implementations.
+type ChatStream interface {
+	// Recv returns the next chunk from the stream.
+	// Returns io.EOF when the stream is complete.
+	Recv() (openai.ChatCompletionStreamResponse, error)
+
+	// Close closes the stream and releases resources.
+	Close()
+}
 
 // Provider defines the interface for LLM providers
 type Provider interface {
@@ -14,16 +27,65 @@ type Provider interface {
 	Name() string
 
 	// ExecuteChat sends a chat completion request
-	ExecuteChat(ctx context.Context, req *types.ChatCompletionRequest, model string) (*types.ChatCompletionResponse, error)
+	ExecuteChat(ctx context.Context, req openai.ChatCompletionRequest, model string) (openai.ChatCompletionResponse, error)
 
 	// ExecuteChatStream sends a streaming chat completion request
-	ExecuteChatStream(ctx context.Context, req *types.ChatCompletionRequest, model string) (<-chan types.StreamChunk, error)
+	ExecuteChatStream(ctx context.Context, req openai.ChatCompletionRequest, model string) (ChatStream, error)
 
 	// CalculateCost calculates the cost for a request
-	CalculateCost(model string, usage types.Usage) float64
+	CalculateCost(model string, usage openai.Usage) float64
 
 	// HealthCheck checks if the provider is healthy
 	HealthCheck(ctx context.Context) error
+}
+
+// openaiStreamWrapper wraps *openai.ChatCompletionStream to implement ChatStream
+type openaiStreamWrapper struct {
+	stream *openai.ChatCompletionStream
+}
+
+// WrapOpenAIStream wraps an openai.ChatCompletionStream to implement the ChatStream interface
+func WrapOpenAIStream(stream *openai.ChatCompletionStream) ChatStream {
+	return &openaiStreamWrapper{stream: stream}
+}
+
+func (w *openaiStreamWrapper) Recv() (openai.ChatCompletionStreamResponse, error) {
+	return w.stream.Recv()
+}
+
+func (w *openaiStreamWrapper) Close() {
+	w.stream.Close()
+}
+
+// Ensure io.EOF is available for stream completion checking
+var _ = io.EOF
+
+// ProviderError represents an error from a provider.
+// Implements both resilience.ProviderError (StatusCode()) and
+// resilience.RetryableError (IsRetryable()) interfaces.
+type ProviderError struct {
+	Code     int
+	Body     string
+	Provider string
+}
+
+func (e *ProviderError) Error() string {
+	return fmt.Sprintf("%s error (status %d): %s", e.Provider, e.Code, e.Body)
+}
+
+// StatusCode returns the HTTP status code, implementing resilience.ProviderError
+func (e *ProviderError) StatusCode() int {
+	return e.Code
+}
+
+// IsRetryable returns true if the error is retryable, implementing resilience.RetryableError
+func (e *ProviderError) IsRetryable() bool {
+	switch e.Code {
+	case 429, 500, 502, 503, 504:
+		return true
+	default:
+		return false
+	}
 }
 
 // Registry manages all configured providers
@@ -37,33 +99,11 @@ func NewRegistry(configs map[string]config.ProviderConfig, timeout config.Timeou
 		providers: make(map[string]Provider),
 	}
 
-	// Create HTTP client with proper timeout configuration
-	// Uses connect timeout for dial and TLS handshake, not just request timeout
-	httpClientCfg := DefaultHTTPClientConfig(timeout)
-	httpClient := NewHTTPClient(httpClientCfg)
-
 	for name, cfg := range configs {
-		var provider Provider
-		var err error
-
-		switch name {
-		case "openai":
-			provider, err = NewOpenAIProvider(cfg, httpClient)
-		case "anthropic":
-			provider, err = NewAnthropicProvider(cfg, httpClient)
-		case "azure-openai", "azure":
-			provider, err = NewAzureOpenAIProvider(cfg, httpClient)
-		case "ollama":
-			provider, err = NewOllamaProvider(cfg, httpClient)
-		default:
-			// Try to determine from base URL or use generic OpenAI-compatible
-			provider, err = NewOpenAICompatibleProvider(name, cfg, httpClient)
-		}
-
+		provider, err := NewGoOpenAIProvider(name, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("initializing provider %s: %w", name, err)
 		}
-
 		registry.providers[name] = provider
 	}
 
