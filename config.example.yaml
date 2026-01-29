@@ -90,11 +90,11 @@ models:
   # Default fallback for unknown models
   default:
     primary:
-      provider: openai
-      model: gpt-4o
+      provider: anthropic
+      model: claude-sonnet-4-20250514
     fallbacks:
-      - provider: anthropic
-        model: claude-sonnet-4-20250514
+      - provider: openai
+        model: gpt-4o
 
 # Resilience settings
 resilience:
@@ -104,28 +104,28 @@ resilience:
     max_backoff: 10s
     backoff_multiplier: 2.0
     retryable_errors:
-      - 429  # Rate limit
-      - 500  # Server error
-      - 502  # Bad gateway
-      - 503  # Service unavailable
-      - 504  # Gateway timeout
+      - 429 # Rate limit
+      - 500 # Server error
+      - 502 # Bad gateway
+      - 503 # Service unavailable
+      - 504 # Gateway timeout
 
   circuit_breaker:
-    failure_threshold: 5      # Failures before opening circuit
-    success_threshold: 3      # Successes to close circuit
-    timeout: 30s              # Time before trying again
+    failure_threshold: 5 # Failures before opening circuit
+    success_threshold: 3 # Successes to close circuit
+    timeout: 30s # Time before trying again
     half_open_max_requests: 3 # Max requests in half-open state
 
   timeout:
     connect: 5s
-    request: 120s             # Max time for LLM response
+    request: 120s # Max time for LLM response
 
 # Cost controls (optional)
 budget:
   enabled: false
-  max_cost_per_hour: 50.00    # USD
+  max_cost_per_hour: 50.00 # USD
   max_cost_per_day: 500.00
-  alert_threshold: 0.8        # Alert at 80%
+  alert_threshold: 0.8 # Alert at 80%
   action_on_exceeded: "reject" # "reject" or "allow_with_warning"
 
 # Metrics
@@ -137,7 +137,7 @@ metrics:
 
 # Logging
 logging:
-  level: debug                # debug, info, warn, error
-  format: json                # json or text
+  level: debug # debug, info, warn, error
+  format: json # json or text
   log_requests: true
-  log_responses: true         # Enable for debugging
+  log_responses: true # Enable for debugging
