@@ -48,12 +48,13 @@ type LoadSheddingConfig struct {
 
 // ProviderConfig defines settings for an LLM provider
 type ProviderConfig struct {
-	APIKey           string `yaml:"api_key"`
-	BaseURL          string `yaml:"base_url"`
-	APIVersion       string `yaml:"api_version"`        // For Azure
-	Region           string `yaml:"region"`             // For Bedrock
-	MaxTokensDefault int    `yaml:"max_tokens_default"` // Default max_tokens if not specified in request
-	StreamBufferSize int    `yaml:"stream_buffer_size"` // Buffer size for streaming channels (default: 32)
+	APIKey           string        `yaml:"api_key"`
+	BaseURL          string        `yaml:"base_url"`
+	APIVersion       string        `yaml:"api_version"`        // For Azure
+	Region           string        `yaml:"region"`             // For Bedrock
+	Timeout          time.Duration `yaml:"timeout"`            // Per-provider timeout (overrides global)
+	MaxTokensDefault int           `yaml:"max_tokens_default"` // Default max_tokens if not specified in request
+	StreamBufferSize int           `yaml:"stream_buffer_size"` // Buffer size for streaming channels (default: 32)
 }
 
 // ModelConfig defines routing and fallback for a model

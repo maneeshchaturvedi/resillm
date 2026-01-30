@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/resillm/resillm/internal/config"
 	"github.com/resillm/resillm/internal/pricing"
@@ -42,6 +44,18 @@ func NewGoOpenAIProvider(name string, cfg config.ProviderConfig) (*GoOpenAIProvi
 		}
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", name)
+	}
+
+	// Apply per-provider timeout if configured
+	if cfg.Timeout > 0 {
+		clientConfig.HTTPClient = &http.Client{
+			Timeout: cfg.Timeout,
+		}
+	} else {
+		// Default timeout of 120 seconds
+		clientConfig.HTTPClient = &http.Client{
+			Timeout: 120 * time.Second,
+		}
 	}
 
 	return &GoOpenAIProvider{

@@ -17,6 +17,7 @@ import (
 func main() {
 	// Parse flags
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	validateOnly := flag.Bool("validate", false, "Validate configuration and exit")
 	flag.Parse()
 
 	// Setup initial logging (will be reconfigured after config load)
@@ -26,7 +27,37 @@ func main() {
 	// Load configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
+		if *validateOnly {
+			fmt.Fprintf(os.Stderr, "Configuration INVALID: %v\n", err)
+			os.Exit(1)
+		}
 		log.Fatal().Err(err).Msg("Failed to load configuration")
+	}
+
+	// Validate-only mode: print config summary and exit
+	if *validateOnly {
+		fmt.Println("Configuration valid!")
+		fmt.Println()
+		fmt.Printf("  Config file:  %s\n", *configPath)
+		fmt.Printf("  Server:       %s:%d\n", cfg.Server.Host, cfg.Server.Port)
+		fmt.Printf("  Metrics port: %d\n", cfg.Server.MetricsPort)
+		fmt.Printf("  Providers:    %d configured\n", len(cfg.Providers))
+		for name := range cfg.Providers {
+			fmt.Printf("                - %s\n", name)
+		}
+		fmt.Printf("  Models:       %d configured\n", len(cfg.Models))
+		for name, model := range cfg.Models {
+			fmt.Printf("                - %s (primary: %s/%s)\n", name, model.Primary.Provider, model.Primary.Model)
+		}
+		fmt.Printf("  Budget:       %s\n", formatEnabled(cfg.Budget.Enabled))
+		if cfg.Budget.Enabled {
+			fmt.Printf("                - Max/hour: $%.2f\n", cfg.Budget.MaxCostPerHour)
+			fmt.Printf("                - Max/day:  $%.2f\n", cfg.Budget.MaxCostPerDay)
+		}
+		fmt.Printf("  Metrics:      %s\n", formatEnabled(cfg.Metrics.Enabled))
+		fmt.Printf("  Rate limit:   %s\n", formatEnabled(cfg.Server.RateLimit.Enabled))
+		fmt.Printf("  Load shedding: %s\n", formatEnabled(cfg.Server.LoadShedding.Enabled))
+		os.Exit(0)
 	}
 
 	// Add immediate feedback that doesn't depend on logger
@@ -82,4 +113,12 @@ func main() {
 	if err := srv.Run(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Server error")
 	}
+}
+
+// formatEnabled returns "enabled" or "disabled" based on the boolean value
+func formatEnabled(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
 }

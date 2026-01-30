@@ -321,6 +321,41 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// handleModels handles GET /v1/models
+// Returns a list of configured models in OpenAI-compatible format
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	type ModelInfo struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+
+	type ModelsResponse struct {
+		Object string      `json:"object"`
+		Data   []ModelInfo `json:"data"`
+	}
+
+	// Build list from configured models
+	var models []ModelInfo
+	for name := range s.cfg.Models {
+		models = append(models, ModelInfo{
+			ID:      name,
+			Object:  "model",
+			Created: startTime.Unix(),
+			OwnedBy: "resillm",
+		})
+	}
+
+	resp := ModelsResponse{
+		Object: "list",
+		Data:   models,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // handleBudget handles GET /v1/budget
 func (s *Server) handleBudget(w http.ResponseWriter, r *http.Request) {
 	var resp map[string]interface{}

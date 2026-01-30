@@ -106,6 +106,7 @@ resillm/
 ### `cmd/resillm`
 
 The application entry point responsible for:
+
 - Parsing command-line flags (`-config` for config path)
 - Setting up structured logging with zerolog
 - Loading and validating configuration
@@ -140,16 +141,16 @@ type Server struct {
 
 **Endpoints:**
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completion (streaming and non-streaming) |
-| `/v1/completions` | POST | Legacy completions (not implemented) |
-| `/v1/embeddings` | POST | Embeddings (not implemented) |
-| `/health` | GET | Health check |
-| `/v1/providers` | GET | Provider status |
-| `/v1/budget` | GET | Budget status |
-| `/admin/reload` | POST | Hot-reload configuration |
-| `/metrics` | GET | Prometheus metrics (separate port) |
+| Endpoint               | Method | Description                                   |
+| ---------------------- | ------ | --------------------------------------------- |
+| `/v1/chat/completions` | POST   | Chat completion (streaming and non-streaming) |
+| `/v1/completions`      | POST   | Legacy completions (not implemented)          |
+| `/v1/embeddings`       | POST   | Embeddings (not implemented)                  |
+| `/health`              | GET    | Health check                                  |
+| `/v1/providers`        | GET    | Provider status                               |
+| `/v1/budget`           | GET    | Budget status                                 |
+| `/admin/reload`        | POST   | Hot-reload configuration                      |
+| `/metrics`             | GET    | Prometheus metrics (separate port)            |
 
 **Middleware Chain:**
 
@@ -227,6 +228,7 @@ func (r *Registry) List() []string
 **GoOpenAIProvider:**
 
 A unified provider implementation using the `sashabaranov/go-openai` library that supports:
+
 - OpenAI (native)
 - Anthropic (via OpenAI-compatible API)
 - Azure OpenAI
@@ -321,13 +323,13 @@ type ModelPricing struct {
 
 **Pre-configured Models:**
 
-| Model | Input/1M | Output/1M |
-|-------|----------|-----------|
-| gpt-4o | $2.50 | $10.00 |
-| gpt-4o-mini | $0.15 | $0.60 |
-| gpt-4-turbo | $10.00 | $30.00 |
-| claude-3.5-sonnet | $3.00 | $15.00 |
-| claude-3-opus | $15.00 | $75.00 |
+| Model             | Input/1M | Output/1M |
+| ----------------- | -------- | --------- |
+| gpt-4o            | $2.50    | $10.00    |
+| gpt-4o-mini       | $0.15    | $0.60     |
+| gpt-4-turbo       | $10.00   | $30.00    |
+| claude-3.5-sonnet | $3.00    | $15.00    |
+| claude-3-opus     | $15.00   | $75.00    |
 
 ### `internal/metrics`
 
@@ -335,21 +337,22 @@ Prometheus metrics collection and reporting.
 
 **Metrics Collected:**
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `resillm_requests_total` | Counter | provider, model, status | Total requests |
-| `resillm_request_latency_seconds` | Histogram | provider | Request latency |
-| `resillm_tokens_total` | Counter | provider, model, type | Token usage |
-| `resillm_cost_dollars_total` | Counter | provider, model | Total cost |
-| `resillm_errors_total` | Counter | provider, error_type | Error count |
-| `resillm_circuit_state` | Gauge | provider | Circuit state |
-| `resillm_fallbacks_total` | Counter | from, to | Fallback usage |
+| Metric                            | Type      | Labels                  | Description     |
+| --------------------------------- | --------- | ----------------------- | --------------- |
+| `resillm_requests_total`          | Counter   | provider, model, status | Total requests  |
+| `resillm_request_latency_seconds` | Histogram | provider                | Request latency |
+| `resillm_tokens_total`            | Counter   | provider, model, type   | Token usage     |
+| `resillm_cost_dollars_total`      | Counter   | provider, model         | Total cost      |
+| `resillm_errors_total`            | Counter   | provider, error_type    | Error count     |
+| `resillm_circuit_state`           | Gauge     | provider                | Circuit state   |
+| `resillm_fallbacks_total`         | Counter   | from, to                | Fallback usage  |
 
 ### `internal/config`
 
 Configuration loading, validation, and hot-reload.
 
 **Key Features:**
+
 - YAML configuration with sensible defaults
 - Environment variable expansion (`${VAR}` syntax)
 - Validation of unexpanded variables in secrets
@@ -403,6 +406,71 @@ Configuration loading, validation, and hot-reload.
    └─ Return 502 Bad Gateway with error details
 ```
 
+```mermaid
+---
+title: Non-Streaming Request Flow
+---
+flowchart TD
+    subgraph Request["1. HTTP Request"]
+        A["/v1/chat/completions"]
+    end
+
+    subgraph Middleware["2. Middleware Chain"]
+        B1[Security headers added]
+        B2[Request logged with trace ID]
+        B3[Metrics recorded]
+        B4[Rate limit checked per-IP]
+        B5[Load shedding checked]
+        B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    subgraph Validation["3. Handler Validates Request"]
+        C1[Model name present]
+        C2[Messages array valid 1-100]
+        C3[Token limits within bounds]
+        C4[Parameters in valid ranges]
+    end
+
+    subgraph Budget["4. Budget Pre-check"]
+        D1[Estimate cost based on input tokens]
+        D2[Check against hourly/daily limits]
+        D1 --> D2
+    end
+
+    subgraph Router["5-6. Router.ExecuteChat"]
+        E1{For each endpoint}
+        E2{Circuit breaker open?}
+        E3[Skip endpoint]
+        E4[Acquire provider semaphore]
+        E5[Execute with retry + exponential backoff]
+        E6[Release semaphore]
+        E7[Update circuit breaker]
+        E8[Record metrics]
+
+        E1 --> E2
+        E2 -->|Yes| E3 --> E1
+        E2 -->|No| E4 --> E5 --> E6 --> E7 --> E8
+    end
+
+    subgraph Success["7. On Success"]
+        F1[Record cost to budget tracker]
+        F2[Set X-Resillm-* headers]
+        F3[Return JSON response]
+        F1 --> F2 --> F3
+    end
+
+    subgraph Failure["8. On All Providers Failed"]
+        G1[Return 502 Bad Gateway]
+    end
+
+    A --> Middleware
+    Middleware --> Validation
+    Validation --> Budget
+    Budget --> Router
+    E8 -->|Success| Success
+    E8 -->|All Failed| Failure
+```
+
 ### Streaming Request
 
 ```
@@ -441,6 +509,59 @@ Configuration loading, validation, and hot-reload.
 5. Cleanup:
    ├─ stream.Close()
    └─ semaphore.Release()
+```
+
+```mermaid
+---
+title: Streaming Request Flow
+---
+flowchart TD
+    subgraph Request["1. HTTP Request"]
+        A["stream: true"]
+    end
+
+    subgraph SSE["2. Set SSE Response Headers"]
+        B1["Content-Type: text/event-stream"]
+        B2["Cache-Control: no-cache"]
+        B3["Connection: keep-alive"]
+    end
+
+    subgraph Router["3. Router.ExecuteChatStream"]
+        C1["Returns StreamResult"]
+        C2["stream + semaphore"]
+        C1 --> C2
+    end
+
+    subgraph Loop["4. Streaming Loop"]
+        D1{select}
+        D2{ctx.Done?}
+        D3[Client disconnected]
+        D4["chunk, err := stream.Recv()"]
+        D5{err == io.EOF?}
+        D6{err != nil?}
+        D7["writeSSEChunk(chunk)"]
+        D8["writeSSEError(err)"]
+        D9["writeSSEDone()"]
+
+        D1 --> D2
+        D2 -->|Yes| D3 --> D9
+        D2 -->|No| D4
+        D4 --> D5
+        D5 -->|Yes| D9
+        D5 -->|No| D6
+        D6 -->|Yes| D8 --> D9
+        D6 -->|No| D7
+        D7 --> D1
+    end
+
+    subgraph Cleanup["5. Cleanup"]
+        E1["stream.Close()"]
+        E2["semaphore.Release()"]
+        E1 --> E2
+    end
+
+    Request --> SSE --> Router --> Loop
+    D9 --> Cleanup
 ```
 
 ---
@@ -536,9 +657,9 @@ The circuit breaker prevents cascading failures by temporarily stopping requests
 ```yaml
 resilience:
   circuit_breaker:
-    failure_threshold: 5      # Failures to open circuit
-    success_threshold: 3      # Successes to close circuit
-    timeout: 30s              # Time before half-open
+    failure_threshold: 5 # Failures to open circuit
+    success_threshold: 3 # Successes to close circuit
+    timeout: 30s # Time before half-open
     half_open_max_requests: 50
 ```
 
@@ -598,6 +719,7 @@ models:
 ```
 
 **Execution order:**
+
 1. Try OpenAI gpt-4o
 2. If failed after retries, try Anthropic claude-sonnet-4
 3. If failed after retries, try Azure OpenAI gpt-4o
@@ -669,7 +791,7 @@ Configuration supports `${VAR}` syntax for environment variables:
 ```yaml
 providers:
   openai:
-    api_key: ${OPENAI_API_KEY}  # Expanded at load time
+    api_key: ${OPENAI_API_KEY} # Expanded at load time
 ```
 
 The loader validates that all variables are expanded, preventing accidental secret exposure in config files.
@@ -689,12 +811,14 @@ applyChanges(diff)
 ```
 
 **Hot-reloadable sections:**
+
 - Models (routing and fallbacks)
 - Resilience settings
 - Budget settings
 - Logging settings
 
 **Requires restart:**
+
 - Provider API keys
 - Server port
 - Metrics port
@@ -755,6 +879,7 @@ metrics.RecordCost(provider, model, cost)
 resillm exposes comprehensive metrics on a separate port (default: 9090).
 
 **Request Metrics:**
+
 ```
 resillm_requests_total{provider="openai",model="gpt-4o",status="success"} 1234
 resillm_request_latency_seconds_bucket{provider="openai",le="1.0"} 1000
@@ -762,17 +887,20 @@ resillm_requests_in_flight{} 5
 ```
 
 **Token Metrics:**
+
 ```
 resillm_tokens_total{provider="openai",model="gpt-4o",type="input"} 500000
 resillm_tokens_total{provider="openai",model="gpt-4o",type="output"} 100000
 ```
 
 **Cost Metrics:**
+
 ```
 resillm_cost_dollars_total{provider="openai",model="gpt-4o"} 12.50
 ```
 
 **Circuit Breaker Metrics:**
+
 ```
 resillm_circuit_state{provider="openai"} 0  # 0=closed, 1=open, 2=half-open
 resillm_circuit_failures_total{provider="openai"} 3
@@ -783,15 +911,15 @@ resillm_circuit_state_changes_total{provider="openai",from="closed",to="open"} 1
 
 Every response includes metadata headers:
 
-| Header | Description |
-|--------|-------------|
-| `X-Request-ID` | Unique request identifier |
-| `X-Resillm-Provider` | Provider that handled request |
-| `X-Resillm-Model` | Actual model used |
-| `X-Resillm-Latency-Ms` | Request latency |
-| `X-Resillm-Cost` | Cost in USD |
-| `X-Resillm-Retries` | Number of retries |
-| `X-Resillm-Fallback` | Whether fallback was used |
+| Header                 | Description                   |
+| ---------------------- | ----------------------------- |
+| `X-Request-ID`         | Unique request identifier     |
+| `X-Resillm-Provider`   | Provider that handled request |
+| `X-Resillm-Model`      | Actual model used             |
+| `X-Resillm-Latency-Ms` | Request latency               |
+| `X-Resillm-Cost`       | Cost in USD                   |
+| `X-Resillm-Retries`    | Number of retries             |
+| `X-Resillm-Fallback`   | Whether fallback was used     |
 
 ### Structured Logging
 
@@ -818,13 +946,13 @@ All logs are structured JSON (configurable to text):
 
 ### Synchronization Primitives
 
-| Component | Primitive | Purpose |
-|-----------|-----------|---------|
-| Router models | RWMutex | Hot-reload safety |
-| Circuit breaker state | Mutex + atomics | State transitions |
-| Metrics counters | atomic.Int64 | Lock-free updates |
-| Rate limiter | Sharded RWMutex | Per-IP limits with 256 shards |
-| Provider concurrency | Semaphore | Request limiting |
+| Component             | Primitive       | Purpose                       |
+| --------------------- | --------------- | ----------------------------- |
+| Router models         | RWMutex         | Hot-reload safety             |
+| Circuit breaker state | Mutex + atomics | State transitions             |
+| Metrics counters      | atomic.Int64    | Lock-free updates             |
+| Rate limiter          | Sharded RWMutex | Per-IP limits with 256 shards |
+| Provider concurrency  | Semaphore       | Request limiting              |
 
 ### Provider Semaphores
 
@@ -886,14 +1014,14 @@ func (s *ShardedRateLimiter) getShard(ip string) int {
 
 All requests are validated:
 
-| Field | Validation |
-|-------|------------|
-| Model | Required, must be configured |
-| Messages | Required, 1-100 items, 32KB max each |
-| Max tokens | 0-100,000 |
-| Temperature | 0.0-2.0 |
-| Top P | 0.0-1.0 |
-| Request body | 5MB maximum |
+| Field        | Validation                           |
+| ------------ | ------------------------------------ |
+| Model        | Required, must be configured         |
+| Messages     | Required, 1-100 items, 32KB max each |
+| Max tokens   | 0-100,000                            |
+| Temperature  | 0.0-2.0                              |
+| Top P        | 0.0-1.0                              |
+| Request body | 5MB maximum                          |
 
 ### Security Headers
 
@@ -985,6 +1113,7 @@ go test ./internal/router/... -v
 ### Adding a New Provider
 
 1. **OpenAI-compatible provider:**
+
    ```go
    // In goopenai.go NewGoOpenAIProvider()
    case "new-provider":
@@ -993,6 +1122,7 @@ go test ./internal/router/... -v
    ```
 
 2. **Custom protocol provider:**
+
    ```go
    // Implement Provider interface
    type CustomProvider struct { ... }
@@ -1094,12 +1224,12 @@ type ProviderError interface {
 
 ## Version History
 
-| Version | Changes |
-|---------|---------|
-| 1.0 | Initial release with OpenAI support |
-| 1.1 | Added Anthropic and Azure support |
-| 1.2 | Circuit breaker and retry patterns |
-| 1.3 | Budget tracking and enforcement |
-| 1.4 | Streaming support with SSE |
-| 1.5 | Hot-reload configuration |
-| 2.0 | Refactored to use go-openai library |
+| Version | Changes                             |
+| ------- | ----------------------------------- |
+| 1.0     | Initial release with OpenAI support |
+| 1.1     | Added Anthropic and Azure support   |
+| 1.2     | Circuit breaker and retry patterns  |
+| 1.3     | Budget tracking and enforcement     |
+| 1.4     | Streaming support with SSE          |
+| 1.5     | Hot-reload configuration            |
+| 2.0     | Refactored to use go-openai library |

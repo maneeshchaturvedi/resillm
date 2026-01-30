@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -21,17 +22,23 @@ type LoadShedder struct {
 	// Metrics
 	totalShed     atomic.Int64
 	totalAccepted atomic.Int64
+
+	// Cleanup
+	stopCleanup chan struct{}
 }
 
 // NewLoadShedder creates a new load shedder.
 // maxActive: maximum concurrent requests (0 = unlimited)
 // maxPerIP: maximum connections per IP (0 = unlimited)
 func NewLoadShedder(maxActive, maxPerIP int64) *LoadShedder {
-	return &LoadShedder{
+	ls := &LoadShedder{
 		maxActiveRequests:   maxActive,
 		maxConnectionsPerIP: maxPerIP,
 		connectionsPerIP:    make(map[string]*atomic.Int64),
+		stopCleanup:         make(chan struct{}),
 	}
+	go ls.cleanupLoop()
+	return ls
 }
 
 // Middleware returns an HTTP middleware that implements load shedding.
@@ -83,14 +90,16 @@ func (ls *LoadShedder) TrackConnection(ip string) bool {
 		ls.connMu.Unlock()
 	}
 
-	// Check limit before incrementing
-	current := counter.Load()
-	if current >= ls.maxConnectionsPerIP {
-		return false
+	// Use compare-and-swap to avoid race condition
+	for {
+		current := counter.Load()
+		if current >= ls.maxConnectionsPerIP {
+			return false
+		}
+		if counter.CompareAndSwap(current, current+1) {
+			return true
+		}
 	}
-
-	counter.Add(1)
-	return true
 }
 
 // ReleaseConnection releases a connection from an IP.
@@ -163,4 +172,30 @@ type LoadShedderStats struct {
 	MaxConnectionsPerIP int64 `json:"max_connections_per_ip"`
 	TotalShed           int64 `json:"total_shed"`
 	TotalAccepted       int64 `json:"total_accepted"`
+}
+
+// cleanupLoop periodically removes stale IP entries with zero connections.
+func (ls *LoadShedder) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			ls.connMu.Lock()
+			for ip, counter := range ls.connectionsPerIP {
+				if counter.Load() == 0 {
+					delete(ls.connectionsPerIP, ip)
+				}
+			}
+			ls.connMu.Unlock()
+		case <-ls.stopCleanup:
+			return
+		}
+	}
+}
+
+// Stop stops the cleanup goroutine.
+func (ls *LoadShedder) Stop() {
+	close(ls.stopCleanup)
 }

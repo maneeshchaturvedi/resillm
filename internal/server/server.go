@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
@@ -125,6 +126,7 @@ func NewWithPath(cfg *config.Config, configPath string) (*Server, error) {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/providers", s.handleProviders)
 	mux.HandleFunc("GET /v1/budget", s.handleBudget)
+	mux.HandleFunc("GET /v1/models", s.handleModels)
 
 	// Admin endpoints (protected with authentication)
 	mux.HandleFunc("POST /admin/reload", s.adminAuthMiddleware(s.handleReload))
@@ -400,7 +402,8 @@ func (s *Server) adminAuthMiddleware(handler http.HandlerFunc) http.HandlerFunc 
 			return
 		}
 
-		if providedKey != s.cfg.Server.AdminAPIKey {
+		// Use constant-time comparison to prevent timing attacks
+		if subtle.ConstantTimeCompare([]byte(providedKey), []byte(s.cfg.Server.AdminAPIKey)) != 1 {
 			http.Error(w, `{"error":{"type":"forbidden","message":"Invalid admin key"}}`, http.StatusForbidden)
 			return
 		}
