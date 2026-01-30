@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker docker-run lint fmt
+.PHONY: build run test clean docker docker-run lint fmt bench bench-server bench-router bench-resilience bench-providers bench-cpu bench-mem bench-baseline bench-compare
 
 # Build variables
 BINARY_NAME=resillm
@@ -74,3 +74,55 @@ release:
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-darwin-amd64 ./cmd/resillm
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/resillm
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-windows-amd64.exe ./cmd/resillm
+
+# ==================== Benchmarks ====================
+
+# Run all benchmarks
+bench:
+	go test -bench=. -benchmem ./internal/...
+
+# Run server benchmarks (rate limiter, handlers, load shedding)
+bench-server:
+	go test -bench=. -benchmem ./internal/server
+
+# Run router benchmarks
+bench-router:
+	go test -bench=. -benchmem ./internal/router
+
+# Run resilience benchmarks (circuit breaker, retrier)
+bench-resilience:
+	go test -bench=. -benchmem ./internal/resilience
+
+# Run provider benchmarks (semaphores)
+bench-providers:
+	go test -bench=. -benchmem ./internal/providers
+
+# Generate CPU profile for router benchmarks
+bench-cpu:
+	go test -bench=BenchmarkRouter -cpuprofile=cpu.prof ./internal/router
+	@echo "Run 'go tool pprof -http=:8081 cpu.prof' to view the profile"
+
+# Generate memory profile for router benchmarks
+bench-mem:
+	go test -bench=BenchmarkRouter -memprofile=mem.prof ./internal/router
+	@echo "Run 'go tool pprof -http=:8081 mem.prof' to view the profile"
+
+# Save benchmark baseline (run before making changes)
+bench-baseline:
+	go test -bench=. -benchmem -count=5 ./internal/... > bench-old.txt
+	@echo "Baseline saved to bench-old.txt"
+
+# Compare benchmarks with baseline (run after making changes)
+bench-compare:
+	@if [ -f bench-old.txt ]; then \
+		go test -bench=. -benchmem -count=5 ./internal/... > bench-new.txt; \
+		@echo "New benchmarks saved to bench-new.txt"; \
+		@echo "Install benchstat with: go install golang.org/x/perf/cmd/benchstat@latest"; \
+		@echo "Then run: benchstat bench-old.txt bench-new.txt"; \
+	else \
+		echo "No bench-old.txt found. Run 'make bench-baseline' first."; \
+	fi
+
+# Clean benchmark artifacts
+bench-clean:
+	rm -f cpu.prof mem.prof bench-old.txt bench-new.txt

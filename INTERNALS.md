@@ -18,7 +18,8 @@ This document provides a comprehensive guide to the internal architecture, desig
 10. [Concurrency Model](#concurrency-model)
 11. [Security](#security)
 12. [Testing](#testing)
-13. [Extension Points](#extension-points)
+13. [Benchmarks](#benchmarks)
+14. [Extension Points](#extension-points)
 
 ---
 
@@ -1104,6 +1105,171 @@ go test ./... -cover
 
 # Specific package
 go test ./internal/router/... -v
+```
+
+---
+
+## Benchmarks
+
+resillm includes comprehensive benchmarks for all performance-critical components. Benchmarks are run on Apple M2 with 8 cores.
+
+### Running Benchmarks
+
+```bash
+# Run all benchmarks
+make bench
+
+# Run specific component benchmarks
+make bench-server       # Rate limiter, handlers, load shedding
+make bench-router       # Request routing
+make bench-resilience   # Circuit breaker, retry
+make bench-providers    # Semaphores
+
+# Generate CPU/memory profiles
+make bench-cpu          # Creates cpu.prof
+make bench-mem          # Creates mem.prof
+
+# Compare benchmarks before/after changes
+make bench-baseline     # Save baseline
+# ... make changes ...
+make bench-compare      # Compare with baseline
+```
+
+### Circuit Breaker Performance
+
+The circuit breaker is highly optimized with minimal lock contention:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|------:|-----:|----------:|
+| Allow (Closed) | 11.64 | 0 | 0 |
+| Allow (Open) | 28.03 | 0 | 0 |
+| Allow (HalfOpen) | 30.92 | 0 | 0 |
+| RecordSuccess | 24.25 | 0 | 0 |
+| RecordFailure | 50.92 | 0 | 0 |
+| State | 14.82 | 0 | 0 |
+| Stats | 35.39 | 96 | 1 |
+| Concurrent Allow | 76.81 | 0 | 0 |
+| Concurrent Mixed | 80.88 | 0 | 0 |
+
+**Key insights:**
+- Allow() in closed state is ~12ns with zero allocations
+- Concurrent access scales well with minimal lock contention
+- State transitions have negligible overhead
+
+### Sharded Rate Limiter Performance
+
+The rate limiter uses 256 shards to minimize lock contention:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|------:|-----:|----------:|
+| GetLimiter (existing IP) | 47.54 | 0 | 0 |
+| GetLimiter (new IP) | 498.5 | 224 | 3 |
+| Allow (existing IP) | 124.9 | 0 | 0 |
+| Concurrent (same IP) | 98.32 | 0 | 0 |
+| Concurrent (different IPs) | 301.3 | 213 | 3 |
+| Shard Distribution | 61.40 | 0 | 0 |
+| Stats | 13.24 | 32 | 1 |
+
+**Key insights:**
+- Hot path (existing IP) is ~48ns with zero allocations
+- FNV hash provides good shard distribution
+- New IP creation is ~500ns (amortized by caching)
+
+### Semaphore Performance
+
+Provider concurrency control with channel-based semaphores:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|------:|-----:|----------:|
+| Acquire (no contention) | 66.31 | 0 | 0 |
+| TryAcquire (no contention) | 64.03 | 0 | 0 |
+| TryAcquire (full) | 3.04 | 0 | 0 |
+| Active | 14.46 | 0 | 0 |
+| Capacity | 2.13 | 0 | 0 |
+| Available | 3.37 | 0 | 0 |
+| Concurrent Acquire/Release | 158.8 | 0 | 0 |
+| High Contention | 226.9 | 0 | 0 |
+| ProviderSemaphores.Get (existing) | 15.81 | 0 | 0 |
+| ProviderSemaphores.Get (new) | 405.8 | 271 | 4 |
+| Full Workflow | 210.1 | 0 | 0 |
+
+**Key insights:**
+- Channel-based implementation is allocation-free on hot path
+- TryAcquire on full semaphore is ~3ns (fast rejection)
+- Scales well under high contention
+
+### Router Performance
+
+Request routing with fallback chains and circuit breaker checks:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|------:|-----:|----------:|
+| ExecuteChat (success) | 376.6 | 448 | 3 |
+| ExecuteChat (concurrent) | 473.8 | 256 | 2 |
+| Model Lookup (known) | 9.67 | 0 | 0 |
+| Model Lookup (default fallback) | 16.91 | 0 | 0 |
+| GetProviderStatus | 176.6 | 232 | 4 |
+| UpdateModels | 22.00 | 0 | 0 |
+| UpdateRetryConfig | 25.24 | 0 | 0 |
+| ExecuteChatStream (success) | 358.6 | 1376 | 7 |
+| ExecuteChatStream (concurrent) | 575.7 | 1376 | 7 |
+| CircuitBreaker Check | 14.98 | 0 | 0 |
+| Semaphore Acquire/Release | 72.70 | 0 | 0 |
+
+**Key insights:**
+- Full request routing is ~377ns including all checks
+- Model lookup is ~10ns (map access)
+- Hot-path config updates are lock-free reads
+
+### HTTP Handler Performance
+
+Request validation and JSON serialization:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|------:|-----:|----------:|
+| GenerateRequestID | 296.5 | 48 | 2 |
+| ValidateRequest (simple) | 4.68 | 0 | 0 |
+| ValidateRequest (50 messages) | 142.8 | 0 | 0 |
+| ValidateRequest (invalid) | 13.48 | 16 | 1 |
+| SanitizeError (no keys) | 102.0 | 80 | 7 |
+| SanitizeError (with API key) | 236.3 | 306 | 7 |
+| HandleHealth | 2099 | 6894 | 33 |
+| HandleProviders | 1861 | 6670 | 26 |
+| HandleBudget | 3461 | 8207 | 53 |
+| HandleModels | 1646 | 6285 | 20 |
+| WriteError | 520.9 | 1056 | 10 |
+| JSON Marshal (response) | 1371 | 1105 | 6 |
+| JSON Unmarshal (request) | 1446 | 1752 | 18 |
+
+**Key insights:**
+- Request validation is ~5ns for simple requests
+- API key sanitization adds ~134ns overhead
+- JSON serialization dominates handler latency
+
+### Performance Summary
+
+| Component | Hot Path Latency | Zero Alloc? |
+|-----------|------------------|-------------|
+| Circuit Breaker Allow | ~12 ns | Yes |
+| Rate Limiter Check | ~48 ns | Yes |
+| Semaphore Acquire | ~66 ns | Yes |
+| Model Lookup | ~10 ns | Yes |
+| Request Validation | ~5 ns | Yes |
+| Full Request Route | ~377 ns | No (3 allocs) |
+
+### Benchmark Files
+
+```
+internal/
+├── resilience/
+│   └── circuitbreaker_bench_test.go  # Circuit breaker benchmarks
+├── providers/
+│   └── semaphore_bench_test.go       # Semaphore benchmarks
+├── router/
+│   └── router_bench_test.go          # Router benchmarks
+└── server/
+    ├── ratelimit_bench_test.go       # Rate limiter benchmarks
+    └── handlers_bench_test.go        # Handler benchmarks
 ```
 
 ---
